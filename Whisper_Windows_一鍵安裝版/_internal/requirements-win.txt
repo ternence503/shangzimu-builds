@@ -1,13 +1,4 @@
-openai-whisper==20250625
-# faster-whisper: CTranslate2 backend with built-in Silero VAD — removes silence
-# hallucinations at the source, faster, lower memory, and torch-free. The app prefers
-# it and automatically falls back to openai-whisper if it cannot be imported.
 faster-whisper>=1.1.0
 opencc-python-reimplemented>=0.1.7
-edge-tts>=7.2.8
-demucs>=4.0.1
-# Switches SSL trust to the OS-native certificate store with zero code changes
-# (applies automatically to every process using this venv, including the demucs
-# subprocess). Fixes CERTIFICATE_VERIFY_FAILED when a corporate firewall/antivirus
-# does SSL inspection with a self-signed root the OS trusts but Python doesn't.
 pip-system-certs>=5.0
+# 內部字幕試用版不安裝雲端TTS或歌詞分離套件。

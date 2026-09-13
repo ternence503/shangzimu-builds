@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+# Refuse to take over an unrelated application with the same display name.
+target="${3:-/}/Applications/上字幕.app"
+if [ -e "$target" ]; then
+    identity=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$target/Contents/Info.plist" 2>/dev/null || true)
+    if [ "$identity" != 'tw.ternence.shangzimu' ]; then
+        echo '已存在不同的「上字幕.app」，為避免覆寫，已停止安裝。' >&2
+        exit 1
+    fi
+fi
+exit 0

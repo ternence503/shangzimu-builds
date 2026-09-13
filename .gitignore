@@ -18,3 +18,13 @@ backup_*/
 
 # 打包壓縮檔
 *.zip
+
+# Native app build artifacts, models and audio never belong in source commits
+*.pkg
+*.exe
+*.dmg
+*.app/
+**/model.bin
+packaging/**/build-local/
+packaging/**/dist/
+packaging/**/resources/

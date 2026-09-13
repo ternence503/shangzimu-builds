@@ -13,6 +13,12 @@ import shutil
 import subprocess
 import tempfile
 import re
+import copy
+import json
+from pathlib import Path
+from subtitle_layout import layout_subtitles, split_subtitle_at, has_split_timing
+from subtitle_workspace import (read_document, serialize_srt, serialize_document, save_new_file,
+                                next_revision_path, write_recovery)
 from typing import Dict, Iterable, List, Optional
 
 try:
@@ -21,10 +27,9 @@ try:
 except ModuleNotFoundError as exc:
     raise SystemExit("目前的 Python 未啟用 tkinter，請安裝 tcl-tk 後再執行本工具。") from exc
 
-import whisper
 try:
     # faster-whisper（CTranslate2 後端）：內建 Silero VAD，可從源頭去掉靜音幻覺，
-    # 且不依賴 torch，速度更快、記憶體更省。裝不起來時自動退回原版 openai-whisper。
+    # 試用版只使用此本機引擎，不安裝原始 Whisper、torch 或 LLVM 編譯依賴。
     from faster_whisper import WhisperModel as _FasterWhisperModel
 except Exception:  # pragma: no cover
     _FasterWhisperModel = None
@@ -54,7 +59,7 @@ MEDIA_FILE_PATTERNS = (
 )
 
 APP_AUTHOR = "Ternence"
-APP_VERSION = "v1.4.0"
+APP_VERSION = "v1.4.0-layout-preview.6"
 APP_SIGNATURE = f"{APP_AUTHOR} {APP_VERSION}"
 TTS_VOICE_OPTIONS: Dict[str, str] = {
     # 台灣腔
@@ -307,18 +312,11 @@ def _slice_long_sentence(sentence: str, max_chars: int) -> List[str]:
 def _configure_runtime_environment() -> None:
     base_path = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else __file__)
 
-    # Windows：搜尋根目錄與 ffmpeg/ 子目錄，同時確認 ffprobe.exe 存在
-    ffmpeg_directories = [
-        base_path,
-        os.path.join(base_path, "ffmpeg"),
-    ]
-    for directory in ffmpeg_directories:
-        ffmpeg_exe = os.path.join(directory, "ffmpeg.exe")
-        ffprobe_exe = os.path.join(directory, "ffprobe.exe")
-        if os.path.isfile(ffmpeg_exe) and os.path.isfile(ffprobe_exe):
+    for directory in [base_path, os.path.join(base_path, "ffmpeg")]:
+        suffix = ".exe" if sys.platform == "win32" else ""
+        if all(os.path.isfile(os.path.join(directory, name + suffix)) for name in ("ffmpeg", "ffprobe")):
             current_path = os.environ.get("PATH", "")
-            path_items = current_path.split(os.pathsep) if current_path else []
-            if directory not in path_items:
+            if directory not in current_path.split(os.pathsep):
                 os.environ["PATH"] = os.pathsep.join([directory, current_path]) if current_path else directory
             break
 
@@ -335,10 +333,9 @@ _ensure_stdio()
 class WhisperApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title(f"Whisper 語音工具：語音轉字幕 ＆ 文字轉語音 | {APP_SIGNATURE}")
+        self.root.title("上字幕｜本機轉錄・字幕整理")
         self.root.geometry("860x820")
-        self.root.minsize(720, 600)
-        self.model_cache: Dict[str, whisper.Whisper] = {}
+        self.root.minsize(720, 760)
         self.faster_model_cache: Dict[str, object] = {}
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
@@ -349,7 +346,7 @@ class WhisperApp:
         self.model_var = tk.StringVar(value=MODEL_OPTIONS[1])
         self.status_var = tk.StringVar(value="選擇音檔或影片後點擊開始")
         self.output_paths_var = tk.StringVar(value="")
-        self.word_timestamps_var = tk.BooleanVar(value=False)
+        self.word_timestamps_var = tk.BooleanVar(value=True)
         self.language_var = tk.StringVar(value="自動偵測")
         self.converter_cache: Dict[str, object] = {}
         self.opencc_unavailable_notified = False
@@ -373,7 +370,141 @@ class WhisperApp:
         self.lyrics_stop_event = threading.Event()
         self.lyrics_worker_thread: Optional[threading.Thread] = None
 
+        self.layout_source = []
+        self.layout_result = []
+        self.layout_dirty = False
+        self.layout_history = []
+        self.last_saved_path = ""
+        self.recovery_failed = False
+        data_dir = os.environ.get("WHISPER_PREVIEW_DATA_DIR") or os.environ.get("WHISPER_APP_DATA_DIR")
+        if not data_dir:
+            data_dir = str(Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "Library" / "Application Support"))) / "WhisperGUI-SubtitlePreview")
+        self.recovery_path = Path(data_dir) / "recovery" / "subtitle.json"
+        self.layout_source_path = ""
+        self.layout_preset_var = tk.StringVar(value="橫式講座／長片")
+        self.layout_chars_var = tk.StringVar(value="18")
+        self.layout_lines_var = tk.StringVar(value="2")
+        self.layout_terms_var = tk.StringVar()
+        self.layout_clauses_var = tk.BooleanVar(value=True)
+        self.layout_status_var = tk.StringVar(value="完成轉錄後會帶入原稿，也可匯入既有 SRT 或字幕專案。")
+        self.layout_capability_var = tk.StringVar(value="先選音檔完成轉錄，或匯入字幕；本機處理，不上傳影音。")
+
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.after(0, self._restore_recovery)
+
+    def _layout_settings(self):
+        try:
+            chars, lines = int(self.layout_chars_var.get()), int(self.layout_lines_var.get())
+            if not 4 <= chars <= 80 or not 1 <= lines <= 4:
+                raise ValueError
+        except ValueError:
+            chars, lines = 18, 2
+        return {"max_chars": chars, "max_lines": lines,
+                "split_clauses": self.layout_clauses_var.get(),
+                "preset": self.layout_preset_var.get(), "terms": self.layout_terms_var.get()}
+
+    def _autosave_layout(self):
+        if not self.layout_result:
+            return
+        try:
+            document = json.loads(serialize_document(self.layout_result, kind="layout",
+                settings=self._layout_settings(), original_segments=self.layout_source))
+            document["source_path"] = self.layout_source_path
+            write_recovery(self.recovery_path, json.dumps(document, ensure_ascii=False))
+        except (ValueError, OSError) as exc:
+            if not self.recovery_failed:
+                self.recovery_failed = True
+                messagebox.showwarning("自動備份未成功", f"目前修改仍在畫面上，請立即保存字幕專案。\n{exc}")
+
+    def _restore_recovery(self):
+        if not self.recovery_path.exists():
+            return
+        try:
+            cues, document = read_document(self.recovery_path, with_metadata=True)
+            if not messagebox.askyesno("繼續上次工作", "找到上次工作的本機備份。要恢復字幕、換行與設定嗎？"):
+                return
+            self._set_layout_source(document.get("original_segments", cues), document.get("source_path", "字幕"),
+                                    formatted=cues, settings=document.get("settings"))
+            self.layout_dirty = True
+            self.notebook.select(3)
+            self.layout_status_var.set("已恢復本機備份；完成後請按「儲存進度，下次繼續」。")
+        except (ValueError, OSError) as exc:
+            messagebox.showwarning("備份無法恢復", f"請匯入先前保存的字幕專案。\n{exc}")
+
+    def _confirm_project_saved(self, title):
+        if not self.layout_dirty:
+            return True
+        answer = messagebox.askyesnocancel(title,
+            "字幕專案尚未保存（匯出 SRT 不等於保存專案）。\n是：先保存專案；否：繼續但不保存；取消：留在目前工作。")
+        if answer is None:
+            return False
+        if answer:
+            return self.save_layout_project()
+        return True
+
+    def on_close(self):
+        if getattr(self, "layout_editing", False):
+            messagebox.showinfo("字幕編輯中", "請先在編輯視窗保存或取消這次修改，再關閉工具。")
+            return
+        running = any(thread and thread.is_alive() for thread in
+                      (self.worker_thread, self.lyrics_worker_thread, self.tts_worker_thread))
+        if running:
+            messagebox.showinfo("工作尚未完成", "請先按停止，等工作停止後再關閉，避免失去尚未完成的轉錄。")
+            return
+        if not self._confirm_project_saved("關閉字幕工具"):
+            return
+        self._autosave_layout()
+        self.root.destroy()
+
+    def _remember_layout(self):
+        if self.layout_result:
+            self.layout_history.append((copy.deepcopy(self.layout_result),
+                                        list(getattr(self, "layout_auto_warnings", [])), self._layout_settings()))
+            self.layout_history = self.layout_history[-50:]
+
+    def undo_layout(self):
+        if not self.layout_history:
+            self.layout_status_var.set("目前沒有可復原的操作。")
+            return
+        self.layout_result, self.layout_auto_warnings, settings = self.layout_history.pop()
+        self.layout_chars_var.set(str(settings["max_chars"]))
+        self.layout_lines_var.set(str(settings["max_lines"]))
+        self.layout_preset_var.set(settings["preset"])
+        self.layout_terms_var.set(settings["terms"])
+        self.layout_clauses_var.set(settings.get("split_clauses", True))
+        self.layout_dirty = True
+        self._refresh_layout_tree()
+        self._autosave_layout()
+        self.layout_status_var.set("已復原上一步；本機備份已更新，完成後請保存專案。")
+
+    def _open_path(self, path):
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(path))
+            else:
+                subprocess.Popen(["open", str(path)])
+        except OSError as exc:
+            messagebox.showerror("無法開啟", f"請手動開啟：{path}\n{exc}")
+
+    def open_start_guide(self):
+        resources = os.environ.get("SHANGZIMU_RESOURCES")
+        self._open_path(Path(resources) / "guide.txt" if resources else Path(__file__).resolve().parent.parent / "新手指南.txt")
+
+    def open_saved_folder(self):
+        if self.last_saved_path:
+            self._open_path(Path(self.last_saved_path).parent)
+        else:
+            self.layout_status_var.set("請先另存 SRT 或保存字幕專案。")
+
+    def load_layout_example(self):
+        resources = os.environ.get("SHANGZIMU_RESOURCES")
+        path = Path(resources) / "examples" / "排版示範.json" if resources else Path(__file__).resolve().parent.parent / "範例" / "排版示範.json"
+        try:
+            self._set_layout_source(read_document(path), str(path))
+            self.notebook.select(3)
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("無法開啟範例", str(exc))
 
     def _notify_runtime_warning(self, message: str, *, flag: str) -> None:
         if getattr(self, flag, False):
@@ -394,6 +525,11 @@ class WhisperApp:
         container.grid(row=0, column=0, sticky="nsew")
         container.columnconfigure(0, weight=1)
         container.rowconfigure(0, weight=1)
+        help_row = ttk.Frame(container)
+        help_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(help_row, text="① 選檔轉錄 → ② 整理字幕 → ③ 匯出 SRT", foreground="#444").pack(side="left")
+        ttk.Button(help_row, text="使用說明", command=self.open_start_guide).pack(side="right")
+        ttk.Button(help_row, text="先試範例", command=self.load_layout_example).pack(side="right", padx=6)
 
         self.notebook = ttk.Notebook(container)
         self.notebook.grid(row=0, column=0, sticky="nsew")
@@ -408,14 +544,490 @@ class WhisperApp:
         tts_outer = ttk.Frame(self.notebook)
         tts_outer.columnconfigure(0, weight=1)
         tts_outer.rowconfigure(0, weight=1)
-        self.notebook.add(tts_outer, text="文字轉語音")
+        self.notebook.add(tts_outer, text="文字轉語音（雲端，內部試用停用）", state="disabled")
         self._build_tts_scrollable_tab(tts_outer)
 
         lyrics_frame = ttk.Frame(self.notebook, padding=20)
         lyrics_frame.columnconfigure(1, weight=1)
         lyrics_frame.rowconfigure(7, weight=1)
-        self.notebook.add(lyrics_frame, text="歌詞辨識")
+        self.notebook.add(lyrics_frame, text="歌詞辨識（後續提供）", state="disabled")
         self._build_lyrics_tab(lyrics_frame)
+
+        layout_frame = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(layout_frame, text="字幕排版")
+        self._build_layout_tab(layout_frame)
+
+    def _build_layout_tab(self, frame) -> None:
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(4, weight=1)
+        toolbar = ttk.Frame(frame)
+        toolbar.grid(row=0, column=0, sticky="ew")
+        ttk.Button(toolbar, text="匯入 SRT／字幕專案", command=self.import_layout_source).pack(side="left")
+        self.layout_preset_box = ttk.Combobox(toolbar, textvariable=self.layout_preset_var,
+            values=["橫式講座／長片", "直式短片"], state="readonly", width=18)
+        self.layout_preset_box.pack(side="left", padx=8)
+        self.layout_preset_box.bind("<<ComboboxSelected>>", self._layout_preset_changed)
+        ttk.Label(toolbar, text="每行字數").pack(side="left")
+        ttk.Spinbox(toolbar, from_=4, to=80, textvariable=self.layout_chars_var, width=4).pack(side="left", padx=4)
+        ttk.Label(toolbar, text="每塊行數").pack(side="left")
+        ttk.Spinbox(toolbar, from_=1, to=4, textvariable=self.layout_lines_var, width=3).pack(side="left", padx=4)
+
+        terms = ttk.Frame(frame)
+        terms.grid(row=1, column=0, sticky="ew", pady=8)
+        terms.columnconfigure(1, weight=1)
+        ttk.Label(terms, text="不拆開的詞：").grid(row=0, column=0)
+        ttk.Entry(terms, textvariable=self.layout_terms_var).grid(row=0, column=1, sticky="ew")
+        ttk.Label(terms, text="例如：講者姓名、公司名（用逗號分隔）").grid(row=1, column=1, sticky="w")
+        ttk.Checkbutton(terms, text="依自然語句切成依序出現的字幕（需要可靠細部時間）",
+                        variable=self.layout_clauses_var).grid(row=2, column=1, sticky="w", pady=4)
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        groups = [
+            ("① 自動整理", [
+                ("自動切句與換行", self.apply_subtitle_layout, "依上方設定整理；重新整理會回到原稿。", "apply"),
+                ("撤銷剛才的修改", self.undo_layout, "回到上一次修改前。", "undo")]),
+            ("② 檢查與修改", [
+                ("修改這句字幕", self.edit_layout_cue, "改文字、換行；有細部時間才能拆成兩句。", "edit"),
+                ("與下一句合併", self.merge_layout_cue, "把選取字幕與下一句合成一段。", "merge"),
+                ("查看需要確認的字幕", self.show_layout_warnings, "檢查過長、顯示太快等提醒。", "warnings")]),
+            ("③ 完成與儲存", [
+                ("匯出給剪輯軟體（SRT）", self.export_layout_srt, "給 Final Cut Pro／剪映使用；不等於儲存進度。", "export"),
+                ("儲存進度，下次繼續", self.save_layout_project, "保存文字、設定與細部時間（JSON）。", "save"),
+                ("查看已儲存的檔案", self.open_saved_folder, "打開目前字幕的輸出資料夾。", "folder")])]
+        self.layout_action_buttons = {}
+        self.layout_step_groups = []
+        self.layout_step_summaries = []
+        self.layout_action_help = groups
+        for column, (title, actions) in enumerate(groups):
+            buttons.columnconfigure(column, weight=1, uniform="layout_steps")
+            group = ttk.Labelframe(buttons, text=title, padding=2)
+            group.grid(row=0, column=column, sticky="nsew", padx=(0, 6))
+            group.columnconfigure(0, weight=1)
+            self.layout_step_groups.append(group)
+            for row, (label, command, explanation, key) in enumerate(actions):
+                button = ttk.Button(group, text=label, command=command)
+                button.grid(row=row * 2, column=0, sticky="ew", pady=(2, 0))
+                self.layout_action_buttons[key] = button
+            summary = ttk.Label(group, text=["重新整理會回到原稿，可撤銷修改。",
+                "先選一句再修改；細部時間齊全才能切句。",
+                "SRT 給剪輯軟體；JSON 保存編輯進度。" ][column], wraplength=250)
+            self.layout_step_summaries.append(summary)
+        ttk.Button(buttons, text="按鈕用途說明", command=self.show_layout_action_help).grid(
+            row=1, column=2, sticky="e", pady=(4, 0))
+        self.layout_selection_hint = tk.StringVar(value="請先在下方選一句字幕，再修改或合併。")
+        self.layout_hint_label = ttk.Label(buttons, textvariable=self.layout_selection_hint, wraplength=450)
+        self.layout_hint_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(frame, textvariable=self.layout_capability_var,
+                  wraplength=680).grid(row=3, column=0, sticky="w", pady=(0, 8))
+
+        panes = ttk.Frame(frame)
+        panes.columnconfigure(0, weight=1)
+        panes.columnconfigure(1, weight=2)
+        panes.rowconfigure(0, weight=1)
+        panes.grid(row=4, column=0, sticky="nsew")
+        original = ttk.Labelframe(panes, text="原稿", padding=6)
+        original.grid_propagate(False)
+        original.rowconfigure(0, weight=1)
+        original.columnconfigure(0, weight=1)
+        self.layout_original_preview = tk.Text(original, wrap="word", width=28, height=6, state=tk.DISABLED)
+        self.layout_original_preview.grid(row=0, column=0, sticky="nsew")
+        original_scroll = ttk.Scrollbar(original, command=self.layout_original_preview.yview)
+        original_scroll.grid(row=0, column=1, sticky="ns")
+        self.layout_original_preview.config(yscrollcommand=original_scroll.set)
+        original.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        formatted = ttk.Labelframe(panes, text="排版結果（雙擊可編輯）", padding=6)
+        formatted.grid_propagate(False)
+        formatted.rowconfigure(0, weight=1)
+        formatted.columnconfigure(0, weight=1)
+        self.layout_tree = ttk.Treeview(formatted, columns=("time", "text"), show="headings", selectmode="browse", height=6)
+        self.layout_tree.heading("time", text="時間")
+        self.layout_tree.heading("text", text="字幕（↵ 表示換行）")
+        self.layout_tree.column("time", width=120, minwidth=100, stretch=False)
+        self.layout_tree.column("text", width=290, minwidth=180)
+        self.layout_tree.grid(row=0, column=0, sticky="nsew")
+        result_scroll = ttk.Scrollbar(formatted, command=self.layout_tree.yview)
+        result_scroll.grid(row=0, column=1, sticky="ns")
+        self.layout_tree.config(yscrollcommand=result_scroll.set)
+        self.layout_tree.bind("<Double-1>", lambda _event: self.edit_layout_cue())
+        self.layout_tree.bind("<<TreeviewSelect>>", self.preview_selected_layout)
+        ttk.Label(formatted, text="所選字幕預覽（實際換行；不是影片版面模擬）").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.layout_selected_preview = tk.Text(formatted, height=2, wrap="word", state=tk.DISABLED)
+        self.layout_selected_preview.grid(row=2, column=0, columnspan=2, sticky="ew", pady=4)
+        formatted.grid(row=0, column=1, sticky="nsew")
+        ttk.Label(frame, textvariable=self.layout_status_var, wraplength=680).grid(row=5, column=0, sticky="w", pady=8)
+        self._update_layout_action_states()
+        self.layout_controls = buttons
+        self.layout_content_panes = panes
+        buttons.bind("<Configure>", self._resize_layout_controls)
+
+    def _resize_layout_controls(self, event):
+        if event.widget is not self.layout_controls:
+            return
+        narrow = event.width < 850
+        for column in range(3):
+            self.layout_controls.columnconfigure(column, weight=1 if not narrow or column == 0 else 0,
+                                                  uniform="" if narrow else "layout_steps")
+        for index, group in enumerate(self.layout_step_groups):
+            group.grid(row=index if narrow else 0, column=0 if narrow else index,
+                       columnspan=3 if narrow else 1, sticky="ew", padx=(0, 0 if narrow else 6))
+            actions = self.layout_action_help[index][1]
+            for column in range(3):
+                group.columnconfigure(column, weight=1 if narrow or column == 0 else 0,
+                                      uniform="actions" if narrow else "")
+            for position, (_, _, _, key) in enumerate(actions):
+                self.layout_action_buttons[key].grid(row=0 if narrow else position,
+                    column=position if narrow else 0, sticky="ew", padx=(0, 4), pady=2)
+            summary = self.layout_step_summaries[index]
+            summary.config(wraplength=max(100, event.width - 40 if narrow else event.width // 3 - 36))
+            if narrow:
+                summary.grid_remove()
+            else:
+                summary.grid(row=len(actions), column=0, columnspan=1, sticky="ew", pady=(2, 0))
+        footer_row = 3 if narrow else 1
+        self.layout_hint_label.grid(row=footer_row)
+        self.layout_hint_label.config(wraplength=max(100, event.width - 170))
+        for child in self.layout_controls.winfo_children():
+            if isinstance(child, ttk.Button):
+                child.grid(row=footer_row)
+
+    def show_layout_action_help(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("字幕按鈕用途說明")
+        dialog.geometry("600x480")
+        dialog.minsize(360, 280)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(0, weight=1)
+        text = tk.Text(dialog, wrap="word", padx=12, pady=12)
+        text.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(dialog, command=text.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        text.config(yscrollcommand=scroll.set)
+        for title, actions in self.layout_action_help:
+            text.insert(tk.END, title + "\n")
+            for label, _, explanation, _ in actions:
+                text.insert(tk.END, label + "\n" + explanation + "\n\n")
+        text.config(state=tk.DISABLED)
+        ttk.Button(dialog, text="關閉", command=dialog.destroy).grid(row=1, column=0, pady=8)
+
+    def _update_layout_action_states(self):
+        if not hasattr(self, "layout_action_buttons"):
+            return
+        selection = self.layout_tree.selection()
+        index = int(selection[0]) if selection else -1
+        selected = 0 <= index < len(self.layout_result)
+        states = {"apply": bool(self.layout_source), "edit": selected,
+                  "merge": selected and index + 1 < len(self.layout_result),
+                  "export": bool(self.layout_result), "save": bool(self.layout_result),
+                  "warnings": bool(self.layout_result),
+                  "undo": bool(getattr(self, "layout_history", []))}
+        for key, enabled in states.items():
+            self.layout_action_buttons[key].config(state="normal" if enabled else "disabled")
+        hint = "請先在下方選一句字幕，再修改或合併。"
+        if selected:
+            hint = f"已選第 {index + 1} 句，可修改文字與換行。"
+            if index + 1 == len(self.layout_result):
+                hint += " 這是最後一句，沒有下一句可合併。"
+        self.layout_selection_hint.set(hint)
+
+    def _layout_preset_changed(self, _event=None) -> None:
+        self.layout_chars_var.set("10" if self.layout_preset_var.get() == "直式短片" else "18")
+        self.layout_lines_var.set("2")
+
+    def _set_layout_source(self, cues, path, formatted=None, settings=None) -> None:
+        if not cues:
+            return False
+        if getattr(self, "layout_editing", False):
+            self.pending_layout_source = (cues, path, formatted, settings)
+            return
+        if not self._confirm_project_saved("替換目前排版"):
+            return False
+        self.layout_dirty = False
+        self.layout_history = []
+        self.last_saved_path = ""
+        self.layout_source = cues
+        self.layout_source_path = path
+        self.layout_result = []
+        self.layout_auto_warnings = []
+        if isinstance(settings, dict):
+            self.layout_chars_var.set(str(settings.get("max_chars", 18)))
+            self.layout_lines_var.set(str(settings.get("max_lines", 2)))
+            self.layout_preset_var.set(settings.get("preset", "橫式講座／長片"))
+            self.layout_terms_var.set(settings.get("terms", ""))
+            self.layout_clauses_var.set(settings.get("split_clauses", True))
+        self.layout_original_preview.config(state=tk.NORMAL)
+        self.layout_original_preview.delete("1.0", tk.END)
+        self.layout_original_preview.insert(tk.END, serialize_srt(cues))
+        self.layout_original_preview.config(state=tk.DISABLED)
+        self._refresh_layout_tree()
+        if formatted is None:
+            self.apply_subtitle_layout()
+        else:
+            self.layout_result = formatted
+            self.layout_auto_warnings = []
+            self._refresh_layout_tree()
+            self.layout_status_var.set("已恢復保存的排版與手動修改；原稿仍可重新套用。")
+            self._autosave_layout()
+        return True
+
+    def import_layout_source(self) -> None:
+        path = filedialog.askopenfilename(title="匯入字幕", filetypes=[("字幕或字幕專案", "*.srt *.json")])
+        if not path:
+            return
+        try:
+            cues, metadata = read_document(path, with_metadata=True)
+            if metadata.get("kind") == "layout":
+                self._set_layout_source(metadata.get("original_segments", cues), path,
+                    formatted=cues, settings=metadata.get("settings"))
+            else:
+                self._set_layout_source(cues, path)
+            self.notebook.select(3)
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("無法匯入", str(exc))
+
+    def apply_subtitle_layout(self) -> None:
+        if not self.layout_source:
+            self.layout_status_var.set("請先完成轉錄或匯入字幕。")
+            return
+        if self.layout_dirty and not messagebox.askyesno("重新排版", "重新套用會捨棄尚未保存的手動修改，回到原稿。繼續嗎？"):
+            return
+        try:
+            chars, lines = int(self.layout_chars_var.get()), int(self.layout_lines_var.get())
+            if not 4 <= chars <= 80 or not 1 <= lines <= 4:
+                raise ValueError("每行字數需為 4–80，每塊行數需為 1–4。")
+            terms = [term.strip() for term in re.split(r"[,，\n]", self.layout_terms_var.get()) if term.strip()]
+            cues, warnings = layout_subtitles(self.layout_source, chars, lines, terms,
+                                             split_clauses=self.layout_clauses_var.get())
+        except ValueError as exc:
+            messagebox.showerror("排版設定", str(exc))
+            return
+        self._remember_layout()
+        self.layout_result = cues
+        self.layout_dirty = True
+        self.layout_auto_warnings = warnings
+        self._refresh_layout_tree()
+        warnings = self.layout_warnings
+        summary = f"原稿 {len(self.layout_source)} 塊 → 排版 {len(cues)} 塊。"
+        if warnings:
+            summary += f" {len(warnings)} 項需確認：" + "；".join(warnings[:3])
+            if len(warnings) > 3:
+                summary += "（可按「查看需要確認的字幕」）"
+        self.layout_status_var.set(summary)
+        self._autosave_layout()
+
+    def _refresh_layout_tree(self) -> None:
+        self._recheck_layout_warnings()
+        for item in self.layout_tree.get_children():
+            self.layout_tree.delete(item)
+        for i, cue in enumerate(self.layout_result):
+            time = f"{cue['start']:.2f}–{cue['end']:.2f} 秒"
+            source = cue.get("source_index", i + 1)
+            review = any(f"原稿第 {source} 塊" in w for w in getattr(self, "layout_warnings", []))
+            display = ("[需確認] " if review else "") + cue["text"].replace("\n", " ↵ ")
+            self.layout_tree.insert("", "end", iid=str(i), values=(time, display),
+                tags=("review",) if review else ())
+        self.layout_tree.tag_configure("review", background="#fff0c2")
+        if self.layout_result:
+            self.layout_tree.selection_set("0")
+        self.preview_selected_layout()
+        if not self.layout_result:
+            self.layout_capability_var.set("先匯入字幕或完成轉錄，再整理換行。")
+        elif not any(has_split_timing(cue) for cue in self.layout_result):
+            self.layout_capability_var.set("此字幕沒有可靠細部時間：可換行／合併，不能切成多塊。需要切句請回到語音轉字幕重新轉錄。")
+        else:
+            self.layout_capability_var.set("可依語音時間切句；黃色項目需確認。完成後先儲存進度，再匯出給剪輯軟體。")
+
+    def preview_selected_layout(self, _event=None):
+        self._update_layout_action_states()
+        selection = self.layout_tree.selection()
+        text = "請選擇一塊字幕，查看實際換行。"
+        if selection and int(selection[0]) < len(self.layout_result):
+            text = self.layout_result[int(selection[0])]["text"]
+        self.layout_selected_preview.config(state=tk.NORMAL)
+        self.layout_selected_preview.delete("1.0", tk.END)
+        self.layout_selected_preview.insert("1.0", text)
+        self.layout_selected_preview.config(state=tk.DISABLED)
+
+    def _recheck_layout_warnings(self) -> None:
+        warnings = list(getattr(self, "layout_auto_warnings", []))
+        try:
+            chars, lines = int(self.layout_chars_var.get()), int(self.layout_lines_var.get())
+            if not 4 <= chars <= 80 or not 1 <= lines <= 4:
+                raise ValueError
+        except ValueError:
+            self.layout_warnings = ["排版設定無效，請修正每行字數與行數。"]
+            return
+        previous_end = 0
+        for index, cue in enumerate(self.layout_result, 1):
+            source = cue.get("source_index", index)
+            label = f"原稿第 {source} 塊（排版第 {index} 塊）"
+            parts = cue["text"].splitlines()
+            if any(len(line) > chars for line in parts):
+                warnings.append(label + "：有一行超過設定字數。")
+            if len(parts) > lines:
+                warnings.append(label + "：行數超過設定。")
+            duration = cue["end"] - cue["start"]
+            if duration <= 0:
+                warnings.append(label + "：時間範圍無效。")
+            elif len(re.sub(r"\s", "", cue["text"])) / duration > 15:
+                warnings.append(label + "：閱讀速度偏快，請預覽確認。")
+            if cue["start"] < previous_end:
+                warnings.append(label + "：與前一塊時間重疊，請確認原稿。")
+            previous_end = max(previous_end, cue["end"])
+        self.layout_warnings = list(dict.fromkeys(warnings))
+
+    def show_layout_warnings(self) -> None:
+        warnings = getattr(self, "layout_warnings", [])
+        dialog = tk.Toplevel(self.root)
+        dialog.title("排版檢查清單")
+        dialog.geometry("620x380")
+        preview = tk.Text(dialog, wrap="word", padx=10, pady=10)
+        preview.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(dialog, command=preview.yview)
+        scroll.pack(side="right", fill="y")
+        preview.config(yscrollcommand=scroll.set)
+        preview.insert("1.0", "\n\n".join(warnings) if warnings else "自動排版未發現需提示的項目；仍建議在剪輯工具預覽。")
+        preview.config(state=tk.DISABLED)
+
+    def edit_layout_cue(self) -> None:
+        if getattr(self, "layout_editing", False):
+            return
+        selection = self.layout_tree.selection()
+        if not selection:
+            self.layout_status_var.set("請先選取一塊排版字幕。")
+            return
+        index = int(selection[0])
+        cue = self.layout_result[index]
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"編輯第 {index + 1} 塊字幕")
+        dialog.geometry("540x260")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self.layout_editing = True
+
+        def closed(event):
+            if event.widget is not dialog:
+                return
+            self.layout_editing = False
+            pending = getattr(self, "pending_layout_source", None)
+            if pending:
+                self.pending_layout_source = None
+                self.root.after(0, lambda: self._set_layout_source(*pending))
+
+        dialog.bind("<Destroy>", closed)
+        ttk.Label(dialog, text="Enter 插入換行。手動切句：把游標放在兩句之間，再按下方按鈕。",
+                  wraplength=510).pack(padx=12, pady=10)
+        editor = tk.Text(dialog, wrap="word", height=6)
+        editor.pack(fill="both", expand=True, padx=12)
+        editor.insert("1.0", cue["text"])
+        editor.focus_set()
+
+        def cancel_edit():
+            if editor.get("1.0", "end-1c") != cue["text"] and not messagebox.askyesno(
+                    "取消這次修改", "編輯視窗有尚未保存的文字。確定放棄這次修改？", parent=dialog):
+                return
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", cancel_edit)
+
+        def save(split=False):
+            text = editor.get("1.0", "end-1c").strip()
+            if not text or re.search(r"\n\s*\n", text):
+                messagebox.showwarning("字幕文字", "請保留文字，且不要加入空白行。", parent=dialog)
+                return
+            edited = dict(cue, text=text)
+            try:
+                if split:
+                    cursor = len(editor.get("1.0", "insert"))
+                    leading = len(editor.get("1.0", "end-1c")) - len(editor.get("1.0", "end-1c").lstrip())
+                    replacements = split_subtitle_at(edited, cursor - leading)
+                else:
+                    replacements = [edited]
+            except ValueError as exc:
+                messagebox.showwarning("無法安全切句", str(exc), parent=dialog)
+                return
+            self._remember_layout()
+            self.layout_result[index:index + 1] = replacements
+            self.layout_dirty = True
+            self.layout_auto_warnings = []
+            self._refresh_layout_tree()
+            self._autosave_layout()
+            self.layout_status_var.set("已手動修改；請另存 SRT 或保存專案。重新套用會回到原稿。")
+            dialog.destroy()
+
+        row = ttk.Frame(dialog)
+        row.pack(pady=10)
+        ttk.Button(row, text="保存文字／換行", command=save).pack(side="left", padx=4)
+        split_button = ttk.Button(row, text="在游標處切成兩塊", command=lambda: save(True))
+        split_button.pack(side="left", padx=4)
+        if not has_split_timing(cue):
+            split_button.config(state=tk.DISABLED)
+            ttk.Label(dialog, text="這塊字幕沒有細部時間，只能改文字／換行；需要切句請重新轉錄。",
+                      wraplength=510).pack(padx=12, pady=4)
+        ttk.Button(row, text="取消", command=cancel_edit).pack(side="left", padx=4)
+
+    def merge_layout_cue(self) -> None:
+        selection = self.layout_tree.selection()
+        if not selection or int(selection[0]) + 1 >= len(self.layout_result):
+            self.layout_status_var.set("請選取一塊後面仍有字幕的項目。")
+            return
+        index = int(selection[0])
+        first, second = self.layout_result[index:index + 2]
+        self._remember_layout()
+        merged = dict(first, end=max(first["end"], second["end"]), text=first["text"] + "\n" + second["text"])
+        merged["words"] = list(first.get("words", [])) + list(second.get("words", []))
+        self.layout_result[index:index + 2] = [merged]
+        self.layout_dirty = True
+        self.layout_auto_warnings = []
+        self._refresh_layout_tree()
+        self._autosave_layout()
+        self.layout_status_var.set("已合併；請確認行數與閱讀速度，再另存。")
+
+    def _save_layout(self, project=False) -> None:
+        if not self.layout_result:
+            self.layout_status_var.set("尚無排版結果可保存。")
+            return False
+        self._recheck_layout_warnings()
+        suffix = ".json" if project else ".srt"
+        stem = os.path.splitext(os.path.basename(self.layout_source_path))[0] or "字幕"
+        folder = str(Path(self.layout_source_path).parent) if self.layout_source_path else str(Path.home() / "Documents")
+        if not os.access(folder, os.W_OK):
+            folder = str(Path.home() / "Documents")
+        try:
+            suggested = next_revision_path(Path(folder) / (stem + "_排版" + suffix))
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("無法準備檔名", f"請選擇可寫入的資料夾或另一個檔名。\n{exc}")
+            return False
+        path = filedialog.asksaveasfilename(title="保存可繼續編輯的字幕專案" if project else "匯出給剪輯工具的 SRT",
+            defaultextension=suffix, initialfile=suggested.name, initialdir=str(suggested.parent),
+            filetypes=[("字幕專案" if project else "SRT 字幕", "*" + suffix)])
+        if not path:
+            return False
+        try:
+            settings = self._layout_settings()
+            content = serialize_document(self.layout_result, kind="layout", settings=settings,
+                original_segments=self.layout_source) if project else serialize_srt(self.layout_result)
+            save_new_file(path, content)
+        except FileExistsError:
+            messagebox.showwarning("請另存新檔", "此檔案已存在，請換一個檔名。試用版不覆蓋原稿或先前版本。")
+            return False
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("無法保存", str(exc))
+            return False
+        self.last_saved_path = path
+        self.layout_status_var.set(f"{'專案已保存，可下次繼續編輯' if project else 'SRT 已匯出，請到剪輯工具預覽；專案仍需另外保存'}：{path}")
+        if project:
+            self.layout_dirty = False
+        self._autosave_layout()
+        warnings = getattr(self, "layout_warnings", [])
+        if warnings:
+            self.show_layout_warnings()
+        return True
+
+    def export_layout_srt(self) -> None:
+        return self._save_layout(False)
+
+    def save_layout_project(self) -> None:
+        return self._save_layout(True)
 
     def _build_tts_scrollable_tab(self, parent: ttk.Frame) -> None:
         canvas = tk.Canvas(parent, highlightthickness=0)
@@ -472,13 +1084,13 @@ class WhisperApp:
             row=0, column=2, sticky="e"
         )
 
-        ttk.Label(frame, text="Whisper 模型：").grid(
+        ttk.Label(frame, text="辨識設定：").grid(
             row=1, column=0, sticky="w", pady=(12, 0)
         )
         model_box = ttk.Combobox(
             frame,
             textvariable=self.model_var,
-            values=MODEL_OPTIONS,
+            values=["small"],
             state="readonly",
         )
         model_box.grid(row=1, column=1, sticky="w", pady=(12, 0))
@@ -492,8 +1104,8 @@ class WhisperApp:
         options_frame.columnconfigure(1, weight=1)
 
         desc = (
-            "預設套用：Temperature=0、關閉跨段上下文、調整靜音門檻。"
-            " 如需更細調，可額外輸出字級時間戳。"
+            "講座通用設定：small 模型，使用電腦本機處理，不上傳影音。"
+            " 長影片可能需要較久，完成後會自動進入字幕排版。"
         )
         ttk.Label(options_frame, text=desc, wraplength=640, foreground="#444").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 8)
@@ -514,7 +1126,7 @@ class WhisperApp:
 
         ttk.Checkbutton(
             options_frame,
-            text="輸出字級時間戳 (word timestamps)",
+            text="取得細部語音時間，供字幕自動切句（稍增運算時間）",
             variable=self.word_timestamps_var,
         ).grid(row=2, column=0, columnspan=2, sticky="w")
 
@@ -543,9 +1155,11 @@ class WhisperApp:
             row=5, column=0, columnspan=3, sticky="w", pady=(8, 12)
         )
 
-        ttk.Label(frame, text="轉錄結果預覽：").grid(
-            row=6, column=0, columnspan=3, sticky="w"
-        )
+        next_row = ttk.Frame(frame)
+        next_row.grid(row=6, column=0, columnspan=3, sticky="ew")
+        ttk.Label(next_row, text="轉錄結果預覽：").pack(side="left")
+        ttk.Button(next_row, text="整理字幕 →", command=lambda: self.notebook.select(3)).pack(side="right")
+        ttk.Button(next_row, text="開啟轉錄資料夾", command=self.open_transcription_folder).pack(side="right", padx=4)
 
         self.preview = tk.Text(frame, wrap="word", height=12)
         self.preview.grid(row=7, column=0, columnspan=3, sticky="nsew")
@@ -1019,6 +1633,14 @@ class WhisperApp:
             messagebox.showinfo("提醒", "目前已經有轉錄正在進行")
             return
 
+        self.transcribe_output_dir = os.path.dirname(os.path.abspath(audio_path))
+        if not os.access(self.transcribe_output_dir, os.W_OK):
+            messagebox.showinfo("選擇字幕儲存位置", "影音所在資料夾不能寫入。請選擇字幕的儲存資料夾，影音不會被修改。")
+            folder = filedialog.askdirectory(title="選擇字幕儲存資料夾")
+            if not folder:
+                return
+            self.transcribe_output_dir = folder
+
         self.stop_event.clear()
         self._update_control_states(True)
         self._update_status("載入模型中（使用 CPU），請稍候...")
@@ -1102,6 +1724,8 @@ class WhisperApp:
         widget.bind("<<Paste>>", lambda _e: self.root.after(10, self.refresh_tts_preview), add="+")
 
     def _handle_global_paste(self, _event=None) -> str | None:
+        if self.notebook.index("current") != 1:
+            return None
         self.paste_tts_text()
         return "break"
 
@@ -1128,21 +1752,36 @@ class WhisperApp:
         target.focus_set()
         self.refresh_tts_preview()
 
-    def _get_model(self, model_name: str) -> whisper.Whisper:
-        if model_name not in self.model_cache:
-            self._update_status(f"第一次使用 {model_name} 模型（CPU），正在載入...")
-            self.model_cache[model_name] = whisper.load_model(model_name, device="cpu")
-        return self.model_cache[model_name]
+    def _get_model(self, model_name: str) -> object:
+        raise RuntimeError("本機辨識引擎尚未就緒。請關閉程式，連網重新雙擊「▶ 啟動 Whisper」完成修復；影音不會上傳。")
 
     def _get_faster_model(self, model_name: str) -> object:
         if model_name not in self.faster_model_cache:
+            from download_model import model_ready
+            directory = os.environ.get("WHISPER_FASTER_MODEL_DIR", "")
+            if model_name != "small" or not directory or not model_ready(directory):
+                raise RuntimeError("本機語音模型未完整準備。請關閉程式，連網重新雙擊「▶ 啟動 Whisper」修復模型；不會上傳影音。")
             self._update_status(
-                f"第一次使用 {model_name} 模型（faster-whisper CPU），正在載入..."
+                "載入本機語音模型中（不會連網下載），接著開始轉錄…"
             )
-            self.faster_model_cache[model_name] = _FasterWhisperModel(
-                model_name, device="cpu", compute_type=FASTER_COMPUTE_TYPE
-            )
+            try:
+                self.faster_model_cache[model_name] = _FasterWhisperModel(
+                    directory, device="cpu", compute_type=FASTER_COMPUTE_TYPE, local_files_only=True
+                )
+            except Exception as exc:
+                raise RuntimeError("模型無法載入。請關閉程式，連網重新雙擊啟動檔修復；若仍失敗請保留安裝紀錄。") from exc
         return self.faster_model_cache[model_name]
+
+    def open_transcription_folder(self):
+        folder = getattr(self, "transcription_folder", "")
+        if folder:
+            self._open_path(folder)
+        else:
+            self._update_status("完成轉錄後，即可開啟新產生的字幕資料夾。")
+
+    def _show_transcription_layout(self, cues, audio_path):
+        if self._set_layout_source(cues, audio_path):
+            self.notebook.select(3)
 
     def _transcribe(
         self,
@@ -1162,8 +1801,7 @@ class WhisperApp:
             return self._faster_transcribe(
                 audio_path, model_name, options, stop_event, progress_cb
             )
-        model = self._get_model(model_name)
-        return model.transcribe(audio_path, fp16=False, verbose=False, **options)
+        self._get_model(model_name)  # Friendly repair error; never download a fallback model.
 
     def _faster_transcribe(
         self,
@@ -1805,12 +2443,15 @@ class WhisperApp:
                 raise SystemExit
 
             output_paths, preview_text = self._write_outputs(audio_path, result)
+            self.transcription_folder = os.path.dirname(output_paths["srt"])
             detected_lang = result.get("language") or "unknown"
             self._update_status(
-                f"完成！偵測語言：{detected_lang}. 檔案已產生。"
+                f"轉錄完成！已保存原稿，接著整理字幕（語言：{detected_lang}）。"
             )
             self._update_outputs_label(output_paths)
             self._update_preview(preview_text)
+            source_cues = _dedupe_repeated_segments(result.get("segments", []) or [])
+            self.root.after(0, lambda: self._show_transcription_layout(source_cues, audio_path))
         except SystemExit:
             self._update_status("轉錄已停止。")
             self._update_outputs_label({})
@@ -1825,14 +2466,15 @@ class WhisperApp:
     def _write_outputs(
         self, audio_path: str, result: Dict[str, object]
     ) -> "tuple[Dict[str, str], str]":
-        base_dir = os.path.dirname(audio_path)
+        source_dir = getattr(self, "transcribe_output_dir", "") or os.path.dirname(audio_path)
         audio_name = os.path.splitext(os.path.basename(audio_path))[0]
         detected_lang = str(result.get("language", "") or "").lower() or "auto"
         suffix = detected_lang
+        base_dir = tempfile.mkdtemp(prefix=f"{audio_name}_{suffix}_字幕_", dir=source_dir)
 
         segments = _dedupe_repeated_segments(result.get("segments", []) or [])
-        # 夾住過長字幕（VAD 靜音空檔造成的），只影響 srt/vtt 時間軸，不影響 txt 文字
-        segments = _clamp_segment_durations(segments)
+        source_segments = segments
+        # Keep the raw timing intact; the layout workflow splits using word timing.
 
         text_lines = [str(seg.get("text", "") or "").strip() for seg in segments]
         text_lines = [line for line in text_lines if line]
@@ -1852,7 +2494,12 @@ class WhisperApp:
         with open(vtt_path, "w", encoding="utf-8") as vtt_file:
             vtt_file.write(vtt_content)
 
-        return {"txt": text_path, "srt": srt_path, "vtt": vtt_path}, text_content
+        paths = {"txt": text_path, "srt": srt_path, "vtt": vtt_path}
+        if source_segments:
+            project_path = os.path.join(base_dir, f"{audio_name}_{suffix}_時間原稿.json")
+            save_new_file(project_path, serialize_document(source_segments))
+            paths["字幕專案"] = project_path
+        return paths, text_content
 
     def _handle_error(self, exc: Exception) -> None:
         self._update_status("發生錯誤，請稍後再試")

@@ -1,11 +1,4 @@
-openai-whisper==20250625
-# faster-whisper：CTranslate2 後端，內建 Silero VAD，可從源頭去除靜音幻覺，
-# 速度更快、記憶體更省，且不依賴 torch。程式會優先使用，裝不起來時自動退回 openai-whisper。
 faster-whisper>=1.1.0
 opencc-python-reimplemented>=0.1.7
-edge-tts>=7.2.8
-demucs>=4.0.1
-# 修正 SSL 信任庫為作業系統內建憑證庫（不需要任何程式碼配合，安裝後自動生效，
-# 連 subprocess 啟動的 demucs 子行程也會套用）；解決公司網路 SSL 檢查自簽憑證
-# 造成下載 Whisper/Demucs 模型時 CERTIFICATE_VERIFY_FAILED 的問題
 pip-system-certs>=5.0
+# 內部字幕試用版不安裝雲端TTS或歌詞分離套件。

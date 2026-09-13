@@ -1,5 +1,23 @@
 # CLAUDE.md
 
+## 目前封裝分支（優先於以下歷史）
+
+`build/shangzimu-bundled-app`：preview.6 GUI，47 單元測試及 6 封裝契約測試；`packaging/entry.py` 是「上字幕」原生包入口，包含 multiprocessing.freeze_support，禁止恢復執行時安裝／下載模型。Mac／Windows 原生包使用同一份 Mac _internal GUI 模組，兩平台腳本包仍各自維護。CI 在原生三平台建置，僅公開程式碼／測試流程，不建立正式 Release 或上傳二進位／影音。原生包版本 metadata 1.4.1 不代表已發行。
+
+Intel Mac 隔離封裝已通過 OS 級禁止網路與開發路徑讀取的合成語音／SRT／Tk 測試；Windows OS 網路隔離、三平台乾淨安裝及搜尋／重啟、Developer ID 公證與完整再散布授權尚未通過。不得用單元測試或 CI 建置成功替代這些验收。封裝資源 THIRD-PARTY-NOTICES 目前僅為內部測試限制標示，不是完整授權文件。
+
+最新preview.4：自然語句分塊與容量拆分獨立，layout_subtitles新增split_clauses=True，GUI開關保存到settings。常見詞組／中文序數及可靠字詞保護，換行以動態規劃取代貪婪填滿，避免極短尾行；仍非完整語意模型。所有切點需時間完整對齊，保留全文及外側起訖。新增所選字幕真實多行文字預覽。44測試與Mac Tk smoke通過，不等於實際影片/FCP/剪映驗收。保留preview.3移除舊引擎的修正。
+
+最新版本 preview.3：修正真實 Intel/x86_64 Mac 安裝 LLVM 編譯問題，完全移除 GUI 的原始 whisper 匯入／型別及 openai-whisper 安裝依賴；不再需要 torch／numba／llvmlite。兩平台 installer 採 --only-binary=:all:。此機 pip dry-run 預編譯依賴解析成功，40測試及Mac Tk smoke通過；未实际安裝或下載模型。下面preview.2為先前功能背景，不應恢復舊引擎依賴。
+
+## 隔離字幕排版試用版
+
+本工作樹基於正式 8039a16 製作 `v1.4.0-layout-preview.2`，未發布或修改 SSD 原包。Mac／Windows GUI 現在相同，執行環境按平台搜尋 ffmpeg/ffprobe。只允許本機字幕處理，TTS 與歌詞分離分頁停用，small 模型從 WHISPER_FASTER_MODEL_DIR 已驗證目錄以 local_files_only=True 載入，不下載或 fallback。
+
+新手改善：獨立 SubtitlePreview venv／模型／版本／Windows 捷徑，Mac Homebrew 系統工具仍共用；下載暫存、重試與完整性／本機載入驗證後才提升。Windows PS1 使用 UTF-8 BOM、-Exe/-Arguments 具名 array 及安全 native stderr 探測，保持 BOM。字幕有關閉／取消保存保護、最近50步復原、本機原子備份與恢復。包內新手指南及範例為最新版說明。38 項純方法／替身測試與 Mac Tk smoke 通過，不等於模型、首次安裝或真人新手驗收。
+
+新主轉錄保存獨立資料夾、時間原稿 JSON，主轉錄輸出不再硬裁八秒；歌詞流程仍沿用舊邏輯。重排可不重辨識，保存修訂專案保留原稿、設定與手動換行。`python3 -m unittest discover -s tests -v` 驗證純函式與真實輸出方法，不需要模型。不得將合成時間示例或 GUI 控制項 smoke 當成真實音畫同步／模型準確率／離線安裝驗證。
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 專案說明

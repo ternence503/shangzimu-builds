@@ -1,0 +1,114 @@
+name: Internal bundled-app validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [build/shangzimu-bundled-app]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bundled-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac:
+    name: Mac ${{ matrix.arch }} build and offline probe
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install native build-only dependencies
+        run: |
+          python -m pip install --only-binary=:all: -r packaging/windows/requirements-build.txt
+          brew install ffmpeg
+          python -m pip check
+      - name: Unit and packaging contract tests
+        run: |
+          python -m unittest discover -s tests -q
+          python -m unittest discover -s packaging/windows -p 'test*.py' -q
+      - name: Prepare public model and resources
+        run: python packaging/ci_prepare.py "$RUNNER_TEMP/resources" --tools "$(dirname "$(command -v ffmpeg)")"
+      - name: Build native app
+        run: python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}'
+      - name: Native dependency closure review
+        run: python packaging/mac/check_dependencies.py "$RUNNER_TEMP/dist/上字幕.app"
+      - name: Generate non-private local speech fixture
+        run: |
+          say -o "$RUNNER_TEMP/speech.aiff" 'Hello. Welcome to the subtitle tool. This recording is generated locally to test offline speech recognition.'
+          test -s "$RUNNER_TEMP/speech.aiff"
+      - name: Relocated offline recognition and signature validation
+        run: python packaging/mac/relocation_test.py "$RUNNER_TEMP/dist/上字幕.app" "$RUNNER_TEMP/speech.aiff" "$RUNNER_TEMP/probe.json"
+      - name: Require actual speech recognition evidence
+        run: python -c 'import json,os; r=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"probe.json"))); assert r["speech_transcribed_and_srt_exported"] and r["adhoc_signature_verified"] and r["returncode"]==0'
+      - name: Build internal installer only after probe passes
+        run: python packaging/mac/installer.py "$RUNNER_TEMP/dist/上字幕.app" "$RUNNER_TEMP/internal.pkg"
+      - name: Record limitations
+        run: |
+          echo 'Native build/probe only; not Developer ID notarization or end-user install/search/reboot acceptance.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No release, tags, binaries, model or audio artifacts are uploaded.' >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install native build-only dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --only-binary=:all: -r packaging/windows/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Build dependency install failed' }
+          choco install ffmpeg innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Build tools install failed' }
+      - name: Unit and packaging contract tests
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -q
+          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
+          python -m unittest discover -s packaging/windows -p 'test*.py' -q
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging tests failed' }
+      - name: Prepare resources and local speech fixture
+        shell: pwsh
+        run: |
+          $tool = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg' -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+          if (-not $tool) { throw 'Native ffmpeg executable missing' }
+          python packaging/ci_prepare.py "$env:RUNNER_TEMP\resources" --tools $tool.Directory.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Resource preparation failed' }
+          Add-Type -AssemblyName System.Speech
+          $voice = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $voice.SetOutputToWaveFile("$env:RUNNER_TEMP\speech.wav")
+          $voice.Speak('Hello. Welcome to the subtitle tool. This recording is generated locally to test offline speech recognition.')
+          $voice.Dispose()
+      - name: Build and execute actual frozen app
+        shell: pwsh
+        run: |
+          $env:SHANGZIMU_TEST_AUDIO = "$env:RUNNER_TEMP\speech.wav"
+          $python = (Get-Command python).Source
+          $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          ./packaging/windows/Build.ps1 -PythonExe $python -PreparedResources "$env:RUNNER_TEMP\resources" -InnoCompiler $compiler -Version '1.4.1' -BuildRoot "$env:RUNNER_TEMP\native-build"
+          $report = Get-Content "$env:RUNNER_TEMP\native-build\frozen-self-test.json" -Raw | ConvertFrom-Json
+          if (-not $report.speech_transcribed_and_srt_exported) { throw 'Actual speech recognition and SRT evidence required' }
+      - name: Record limitations
+        shell: pwsh
+        run: |
+          'Native build/probe only; not installation, start-menu search, reboot, SmartScreen or end-user acceptance. Python socket calls blocked; Windows OS-level network denial not yet verified.' >> $env:GITHUB_STEP_SUMMARY
+          'No release, tags, binaries, model or audio artifacts are uploaded.' >> $env:GITHUB_STEP_SUMMARY
