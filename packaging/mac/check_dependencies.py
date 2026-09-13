@@ -66,7 +66,7 @@ def audit_graph(app, images, dynamic_roots=()):
             return owner.parent / value[len('@loader_path'):].lstrip('/')
         if value == '@executable_path' or value.startswith('@executable_path/'):
             return executable.parent / value[len('@executable_path'):].lstrip('/')
-        if value.startswith('/'):
+        if value.startswith('/') or Path(value).is_absolute():
             return Path(value)
         return None
 

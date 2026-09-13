@@ -11,15 +11,17 @@ parser = argparse.ArgumentParser()
 parser.add_argument('app', type=Path)
 parser.add_argument('speech', type=Path)
 parser.add_argument('report', type=Path)
+parser.add_argument('--in-place', action='store_true', help='Probe the actual installed app without copying or re-signing it')
 args = parser.parse_args()
 subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(args.app)], check=True, capture_output=True)
 with tempfile.TemporaryDirectory(prefix='shangzimu-relocation-', dir='/private/tmp') as directory:
     base = Path(directory)
-    app = base / '獨立位置' / '上字幕.app'
-    shutil.copytree(args.app, app, symlinks=True, copy_function=shutil.copy)
-    for attribute in ['com.apple.FinderInfo', 'com.apple.ResourceFork']:
-        subprocess.run(['/usr/bin/xattr', '-dr', attribute, str(app)], capture_output=True)
-    subprocess.run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', str(app)], check=True, capture_output=True)
+    app = args.app.resolve() if args.in_place else base / '獨立位置' / '上字幕.app'
+    if not args.in_place:
+        shutil.copytree(args.app, app, symlinks=True, copy_function=shutil.copy)
+        for attribute in ['com.apple.FinderInfo', 'com.apple.ResourceFork']:
+            subprocess.run(['/usr/bin/xattr', '-dr', attribute, str(app)], capture_output=True)
+        subprocess.run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', str(app)], check=True, capture_output=True)
     subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True, capture_output=True)
     speech = base / 'speech.aiff'
     shutil.copy2(args.speech, speech)
@@ -32,7 +34,8 @@ with tempfile.TemporaryDirectory(prefix='shangzimu-relocation-', dir='/private/t
     result = subprocess.run(command, env=env, cwd=base, capture_output=True, text=True, timeout=90)
     data = json.loads(report.read_text(encoding='utf-8')) if report.exists() else {'status':'failed'}
     data.update(returncode=result.returncode, stderr=result.stderr,
-        development_paths_denied=True, relocated=True,
+        development_paths_denied=True, relocated=not args.in_place,
+        in_place_execution=args.in_place,
         adhoc_signature_verified=True,
         os_network_denied=True,
         limitation='Same installed macOS, not a fresh operating-system VM')

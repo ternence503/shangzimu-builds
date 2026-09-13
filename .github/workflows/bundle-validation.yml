@@ -60,9 +60,15 @@ jobs:
         run: python -c 'import json,os; r=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"probe.json"))); assert r["speech_transcribed_and_srt_exported"] and r["adhoc_signature_verified"] and r["returncode"]==0'
       - name: Build internal installer only after probe passes
         run: python packaging/mac/installer.py "$RUNNER_TEMP/dist/上字幕.app" "$RUNNER_TEMP/internal.pkg"
+      - name: Install on disposable runner and execute actual Applications app
+        run: |
+          test ! -e '/Applications/上字幕.app'
+          sudo /usr/sbin/installer -pkg "$RUNNER_TEMP/internal.pkg" -target /
+          python packaging/mac/relocation_test.py '/Applications/上字幕.app' "$RUNNER_TEMP/speech.aiff" "$RUNNER_TEMP/installed-probe.json" --in-place
+          /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f '/Applications/上字幕.app'
       - name: Record limitations
         run: |
-          echo 'Native build/probe only; not Developer ID notarization or end-user install/search/reboot acceptance.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Native build, runner installation and offline execution probe; not Developer ID notarization or end-user GUI search/reboot acceptance.' >> "$GITHUB_STEP_SUMMARY"
           echo 'No release, tags, binaries, model or audio artifacts are uploaded.' >> "$GITHUB_STEP_SUMMARY"
 
   windows:
@@ -113,8 +119,29 @@ jobs:
       - name: Relocate and execute complete Windows app
         shell: pwsh
         run: ./packaging/windows/relocation_test.ps1 -BundleDir "$env:RUNNER_TEMP\native-build\dist\上字幕" -SpeechFile "$env:RUNNER_TEMP\speech.wav" -ReportFile "$env:RUNNER_TEMP\windows-relocation.json"
+      - name: Install on disposable runner and verify start-menu shortcut
+        shell: pwsh
+        run: |
+          $appDir = Join-Path $env:LOCALAPPDATA 'Programs\ShangZiMu'
+          if (Test-Path -LiteralPath $appDir) { throw 'Existing installation must not be overwritten in this test' }
+          $installers = @(Get-ChildItem "$env:RUNNER_TEMP\native-build\release" -Filter '*.exe')
+          if ($installers.Count -ne 1) { throw 'Exactly one installer required' }
+          $process = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-') -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Installer failed' }
+          $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) '上字幕.lnk'
+          if (-not (Test-Path -LiteralPath $shortcutPath)) { throw 'Start-menu shortcut missing' }
+          $shell = New-Object -ComObject WScript.Shell
+          $shortcut = $shell.CreateShortcut($shortcutPath)
+          if ($shortcut.TargetPath -ne (Join-Path $appDir '上字幕.exe')) { throw 'Start-menu shortcut target incorrect' }
+          $env:WHISPER_PREVIEW_DATA_DIR = "$env:RUNNER_TEMP\installed-progress"
+          $env:SHANGZIMU_TEST_AUDIO = "$env:RUNNER_TEMP\speech.wav"
+          $reportPath = "$env:RUNNER_TEMP\installed-probe.json"
+          $process = Start-Process -FilePath $shortcut.TargetPath -WorkingDirectory $appDir -ArgumentList @('--self-test', ('"' + $reportPath + '"')) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Installed application failed' }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+          if ($report.status -ne 'passed' -or -not $report.speech_transcribed_and_srt_exported) { throw 'Installed speech and SRT evidence required' }
       - name: Record limitations
         shell: pwsh
         run: |
-          'Native build/probe only; not installation, start-menu search, reboot, SmartScreen or end-user acceptance. Python socket calls blocked; Windows OS-level network denial not yet verified.' >> $env:GITHUB_STEP_SUMMARY
+          'Native build, runner installation, shortcut target and speech/SRT probes; not GUI search, reboot, SmartScreen or end-user acceptance. Python socket calls blocked; Windows OS-level network denial not yet proven.' >> $env:GITHUB_STEP_SUMMARY
           'No release, tags, binaries, model or audio artifacts are uploaded.' >> $env:GITHUB_STEP_SUMMARY
