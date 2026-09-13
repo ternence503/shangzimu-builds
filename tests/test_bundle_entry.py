@@ -18,7 +18,7 @@ class BundleEntryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='上字幕 空白路徑') as temporary:
             resource = Path(temporary) / 'app'
             data = Path(temporary) / 'progress'
-            with patch.object(sys, '_MEIPASS', str(resource), create=True), patch.dict(os.environ, {'WHISPER_PREVIEW_DATA_DIR':str(data)}, clear=True):
+            with patch.object(sys, '_MEIPASS', str(resource), create=True), patch.dict(os.environ, {'WHISPER_PREVIEW_DATA_DIR':str(data)}, clear=True), patch.object(entry.Path, 'home', side_effect=RuntimeError('No home directory')):
                 base = entry.configure()
                 self.assertEqual(base, resource / 'resources')
                 self.assertEqual(os.environ['WHISPER_FASTER_MODEL_DIR'], str(base / 'models' / 'faster-small'))
@@ -40,6 +40,19 @@ class BundleEntryTests(unittest.TestCase):
         self.assertNotIn('snapshot_download', text)
         self.assertNotIn('pip install', text)
         self.assertNotIn('brew install', text)
+
+    def test_frozen_repair_points_to_installer_not_script(self):
+        source = ROOT / 'Whisper_Mac_一鍵安裝版' / '_internal' / 'whisper_gui_mac.py'
+        tree = ast.parse(source.read_text(encoding='utf-8'))
+        app = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'WhisperApp')
+        method = next(n for n in app.body if isinstance(n, ast.FunctionDef) and n.name == '_model_repair_message')
+        namespace = {'os':os}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), namespace)
+        with patch.dict(os.environ, {'SHANGZIMU_RESOURCES':'bundled'}, clear=True):
+            message = namespace['_model_repair_message'](None, '模型損壞。')
+            self.assertIn('完整安裝包', message)
+            self.assertNotIn('啟動 Whisper', message)
+            self.assertNotIn('連網', message)
 
 if __name__ == '__main__':
     unittest.main()

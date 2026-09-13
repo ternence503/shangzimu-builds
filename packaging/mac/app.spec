@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import re
 from PyInstaller.utils.hooks import collect_all
 
 root = Path(SPECPATH).parent.parent
@@ -20,6 +21,15 @@ for package in ['faster_whisper', 'ctranslate2', 'onnxruntime', 'opencc']:
 a = Analysis([str(root / 'packaging' / 'entry.py')], pathex=[str(source)],
              binaries=binaries, datas=datas, hiddenimports=hiddenimports,
              excludes=['torch', 'demucs', 'edge_tts'], noarchive=False)
+# Broad hooks collect optional standalone C API / audio-plugin libraries that
+# are not imported by our CPU ONNX Python binding or file-transcription path.
+# Remove only these names. Closure audit and real offline decoding must still
+# pass after removal; never exclude an unresolved required dependency.
+def optional_unused_library(destination):
+    name = Path(destination).name
+    return name == 'libmpg123.0.dylib' or bool(re.fullmatch(r'libonnxruntime\.\d+(?:\.\d+)*\.dylib', name))
+a.binaries = [record for record in a.binaries if not optional_unused_library(record[0])]
+a.datas = [record for record in a.datas if not optional_unused_library(record[0])]
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='ShangZiMu',
           debug=False, strip=False, upx=False, console=False, target_arch=os.environ['SHANGZIMU_ARCH'])

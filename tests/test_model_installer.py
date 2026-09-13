@@ -55,8 +55,8 @@ class ModelInstallerTests(unittest.TestCase):
             with self.assertRaises(ValueError): installer.download_model("medium", Path(folder))
 
     def test_platform_isolation_and_no_formal_shortcut_deletion(self):
-        mac = (INTERNAL / "setup_and_run_mac.sh").read_text()
-        win = (ROOT / "Whisper_Windows_一鍵安裝版" / "_internal" / "setup_and_run.ps1").read_text()
+        mac = (INTERNAL / "setup_and_run_mac.sh").read_text(encoding='utf-8')
+        win = (ROOT / "Whisper_Windows_一鍵安裝版" / "_internal" / "setup_and_run.ps1").read_text(encoding='utf-8-sig')
         self.assertIn("WhisperGUI-SubtitlePreview", mac)
         self.assertIn("WhisperGui-SubtitlePreview", win)
         self.assertNotIn("Remove-Item", win)
@@ -66,7 +66,7 @@ class ModelInstallerTests(unittest.TestCase):
                          (ROOT / "Whisper_Windows_一鍵安裝版" / "_internal" / "download_model.py").read_bytes())
 
     def test_powershell_python_calls_use_explicit_named_array(self):
-        win = (ROOT / "Whisper_Windows_一鍵安裝版" / "_internal" / "setup_and_run.ps1").read_text()
+        win = (ROOT / "Whisper_Windows_一鍵安裝版" / "_internal" / "setup_and_run.ps1").read_text(encoding='utf-8-sig')
         calls = [line.strip() for line in win.splitlines() if line.strip().startswith("Invoke-Python ")]
         self.assertEqual(len(calls), 6)
         for call in calls:

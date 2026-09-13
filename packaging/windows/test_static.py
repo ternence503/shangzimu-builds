@@ -32,7 +32,7 @@ class PackagingContract(unittest.TestCase):
                  patch.dict("os.environ", {"SHANGZIMU_BUILD_RESOURCES": resources}), \
                  patch("platform.system", return_value="Windows"), \
                  patch("platform.machine", return_value="AMD64"):
-                exec(compile((HERE / "up-subtitles.spec").read_text(), "spec", "exec"), namespace)
+                exec(compile((HERE / "up-subtitles.spec").read_text(encoding='utf-8'), "spec", "exec"), namespace)
             self.assertEqual(Path(captured["scripts"][0]), HERE.parent / "entry.py")
             self.assertTrue(Path(captured["scripts"][0]).is_file())
             self.assertTrue((Path(captured["pathex"][0]) / "whisper_gui_mac.py").is_file())
@@ -70,7 +70,7 @@ class PackagingContract(unittest.TestCase):
             (model / ".model_ready.json").write_text(json.dumps(dict(schema=1, files=files)))
             with self.assertRaises(ValueError): inputs.validate(resources, load_model=False)
     def test_spec_parses_and_correct_entry(self):
-        ast.parse((HERE / "up-subtitles.spec").read_text())
+        ast.parse((HERE / "up-subtitles.spec").read_text(encoding='utf-8'))
         root = HERE.parent
         self.assertTrue((root.parent / "Whisper_Mac_一鍵安裝版" / "_internal" / "whisper_gui_mac.py").is_file())
 
@@ -94,13 +94,13 @@ class PackagingContract(unittest.TestCase):
             with self.assertRaises(ValueError): inputs.validate(directory, load_model=False)
 
     def test_no_end_user_dependency_or_data_delete(self):
-        text = (HERE / "installer.iss").read_text()
+        text = (HERE / "installer.iss").read_text(encoding='utf-8-sig')
         self.assertIn("PrivilegesRequired=lowest", text)
         self.assertIn("{userprograms}\\上字幕", text)
         self.assertNotIn("[UninstallDelete]", text)
         self.assertNotIn("[InstallDelete]", text)
         self.assertNotIn("pip", text)
-        build = (HERE / "Build.ps1").read_text()
+        build = (HERE / "Build.ps1").read_text(encoding='utf-8-sig')
         self.assertNotIn("Remove-Item", build)
         self.assertIn("$Result.status -ne 'passed'", build)
 

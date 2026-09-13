@@ -22,7 +22,7 @@ def load_app_methods():
     names = {'_save_layout', 'save_layout_project', 'export_layout_srt',
              '_confirm_project_saved', 'on_close', '_remember_layout', 'undo_layout',
              '_autosave_layout', '_restore_recovery', '_layout_settings',
-             '_set_layout_source', '_get_faster_model', '_get_model'}
+             '_set_layout_source', '_get_faster_model', '_get_model', '_model_repair_message'}
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'WhisperApp')
     body = [ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0),
             ast.ClassDef(name='App', bases=[], keywords=[], decorator_list=[],
@@ -212,8 +212,8 @@ class OnboardingTests(unittest.TestCase):
         self.ns['whisper'].load_model.assert_not_called()
 
     def test_installers_use_isolated_environment_and_common_local_model(self):
-        mac = (INTERNAL / 'setup_and_run_mac.sh').read_text()
-        win = (ROOT / 'Whisper_Windows_一鍵安裝版' / '_internal' / 'setup_and_run.ps1').read_text()
+        mac = (INTERNAL / 'setup_and_run_mac.sh').read_text(encoding='utf-8')
+        win = (ROOT / 'Whisper_Windows_一鍵安裝版' / '_internal' / 'setup_and_run.ps1').read_text(encoding='utf-8-sig')
         for script in (mac, win):
             self.assertIn('SubtitlePreview', script)
             self.assertIn('WHISPER_FASTER_MODEL_DIR', script)

@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: '1'
+
 concurrency:
   group: bundled-validation-${{ github.ref }}
   cancel-in-progress: true
@@ -46,7 +49,7 @@ jobs:
       - name: Build native app
         run: python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}'
       - name: Native dependency closure review
-        run: python packaging/mac/check_dependencies.py "$RUNNER_TEMP/dist/上字幕.app"
+        run: python packaging/mac/check_dependencies.py "$RUNNER_TEMP/dist/上字幕.app" --pyinstaller
       - name: Generate non-private local speech fixture
         run: |
           say -o "$RUNNER_TEMP/speech.aiff" 'Hello. Welcome to the subtitle tool. This recording is generated locally to test offline speech recognition.'
@@ -107,6 +110,9 @@ jobs:
           ./packaging/windows/Build.ps1 -PythonExe $python -PreparedResources "$env:RUNNER_TEMP\resources" -InnoCompiler $compiler -Version '1.4.1' -BuildRoot "$env:RUNNER_TEMP\native-build"
           $report = Get-Content "$env:RUNNER_TEMP\native-build\frozen-self-test.json" -Raw | ConvertFrom-Json
           if (-not $report.speech_transcribed_and_srt_exported) { throw 'Actual speech recognition and SRT evidence required' }
+      - name: Relocate and execute complete Windows app
+        shell: pwsh
+        run: ./packaging/windows/relocation_test.ps1 -BundleDir "$env:RUNNER_TEMP\native-build\dist\上字幕" -SpeechFile "$env:RUNNER_TEMP\speech.wav" -ReportFile "$env:RUNNER_TEMP\windows-relocation.json"
       - name: Record limitations
         shell: pwsh
         run: |

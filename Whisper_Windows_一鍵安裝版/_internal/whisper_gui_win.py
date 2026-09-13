@@ -1753,14 +1753,19 @@ class WhisperApp:
         self.refresh_tts_preview()
 
     def _get_model(self, model_name: str) -> object:
-        raise RuntimeError("本機辨識引擎尚未就緒。請關閉程式，連網重新雙擊「▶ 啟動 Whisper」完成修復；影音不會上傳。")
+        raise RuntimeError(self._model_repair_message("本機辨識引擎尚未就緒。"))
+
+    def _model_repair_message(self, reason: str) -> str:
+        if os.environ.get("SHANGZIMU_RESOURCES"):
+            return reason + "請關閉上字幕，使用完整安裝包重新安裝；不要刪除已保存的字幕專案。若仍失敗，請將此錯誤訊息提供給管理者；影音不會上傳。"
+        return reason + "請關閉程式，連網重新雙擊「▶ 啟動 Whisper」修復；影音不會上傳。"
 
     def _get_faster_model(self, model_name: str) -> object:
         if model_name not in self.faster_model_cache:
             from download_model import model_ready
             directory = os.environ.get("WHISPER_FASTER_MODEL_DIR", "")
             if model_name != "small" or not directory or not model_ready(directory):
-                raise RuntimeError("本機語音模型未完整準備。請關閉程式，連網重新雙擊「▶ 啟動 Whisper」修復模型；不會上傳影音。")
+                raise RuntimeError(self._model_repair_message("本機語音模型未完整準備。"))
             self._update_status(
                 "載入本機語音模型中（不會連網下載），接著開始轉錄…"
             )
@@ -1769,7 +1774,7 @@ class WhisperApp:
                     directory, device="cpu", compute_type=FASTER_COMPUTE_TYPE, local_files_only=True
                 )
             except Exception as exc:
-                raise RuntimeError("模型無法載入。請關閉程式，連網重新雙擊啟動檔修復；若仍失敗請保留安裝紀錄。") from exc
+                raise RuntimeError(self._model_repair_message("模型無法載入。")) from exc
         return self.faster_model_cache[model_name]
 
     def open_transcription_folder(self):

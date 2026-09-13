@@ -12,8 +12,13 @@ def configure():
     os.environ['WHISPER_FASTER_MODEL_DIR'] = str(base / 'models' / 'faster-small')
     os.environ['SHANGZIMU_RESOURCES'] = str(base)
     os.environ['PATH'] = str(base / 'bin') + os.pathsep + os.environ.get('PATH', '')
-    data = Path(os.environ.get('WHISPER_PREVIEW_DATA_DIR',
-        str(Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'Library' / 'Application Support'))) / 'ShangZiMu')))
+    configured_data = os.environ.get('WHISPER_PREVIEW_DATA_DIR')
+    if configured_data:
+        data = Path(configured_data)
+    elif os.environ.get('LOCALAPPDATA'):
+        data = Path(os.environ['LOCALAPPDATA']) / 'ShangZiMu'
+    else:
+        data = Path.home() / 'Library' / 'Application Support' / 'ShangZiMu'
     data.mkdir(parents=True, exist_ok=True)
     os.environ['WHISPER_APP_DATA_DIR'] = str(data)
     os.environ['WHISPER_PREVIEW_DATA_DIR'] = str(data)

@@ -11,10 +11,10 @@ class NoLegacyEngineTests(unittest.TestCase):
             ('Mac', 'whisper_gui_mac.py', 'requirements-mac.txt', 'setup_and_run_mac.sh'),
             ('Windows', 'whisper_gui_win.py', 'requirements-win.txt', 'setup_and_run.ps1')]:
             internal = ROOT / f'Whisper_{platform}_一鍵安裝版' / '_internal'
-            dependencies = (internal / requirements).read_text()
+            dependencies = (internal / requirements).read_text(encoding='utf-8')
             for unwanted in ('openai-whisper', 'numba', 'llvmlite', 'torch'):
                 self.assertNotIn(unwanted, dependencies)
-            source = (internal / gui).read_text()
+            source = (internal / gui).read_text(encoding='utf-8')
             tree = ast.parse(source)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
