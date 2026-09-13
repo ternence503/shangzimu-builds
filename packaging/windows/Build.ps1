@@ -31,6 +31,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Dependency lock could not be recorded.' }
 # The supplied resources must include real CT2 model files and redistribution notices.
 # No model or binary is downloaded by the finished app.
 Invoke-Checked -Exe $BuildPython -Arguments @((Join-Path $PSScriptRoot 'check_inputs.py'), [IO.Path]::GetFullPath($PreparedResources))
+$LanguageFile = Join-Path $PreparedResources 'licenses\inno-setup\ChineseTraditional.isl'
+if (-not (Test-Path -LiteralPath $LanguageFile -PathType Leaf)) { throw 'Prepared resources lack the pinned Traditional Chinese installer language.' }
 $OldResourceEnv = $env:SHANGZIMU_BUILD_RESOURCES
 $OldDataEnv = $env:WHISPER_PREVIEW_DATA_DIR
 try {
@@ -48,7 +50,7 @@ try {
     if ($Result.status -ne 'passed') { throw 'Frozen self-test report does not declare passed.' }
     $Release = Join-Path $BuildRoot 'release'
     New-Item -ItemType Directory -Path $Release | Out-Null
-    Invoke-Checked -Exe $InnoCompiler -Arguments @("/DBundleDir=$Bundle", "/DReleaseDir=$Release", "/DAppVersion=$Version", (Join-Path $PSScriptRoot 'installer.iss'))
+    Invoke-Checked -Exe $InnoCompiler -Arguments @("/DBundleDir=$Bundle", "/DReleaseDir=$Release", "/DAppVersion=$Version", "/DLanguageFile=$LanguageFile", (Join-Path $PSScriptRoot 'installer.iss'))
     Write-Host "Built installer under $Release. This is not a clean-machine acceptance result."
 } finally {
     $env:SHANGZIMU_BUILD_RESOURCES = $OldResourceEnv

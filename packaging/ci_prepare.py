@@ -3,6 +3,7 @@ from pathlib import Path
 import argparse
 import shutil
 import sys
+import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument('resources', type=Path)
@@ -22,6 +23,9 @@ shutil.copyfile(source / '新手指南.txt', resources / 'guide.txt')
 for name in ['ffmpeg', 'ffprobe']:
     filename = name + ('.exe' if sys.platform == 'win32' else '')
     shutil.copy(args.tools / filename, resources / 'bin' / filename)
+if sys.platform == 'win32':
+    subprocess.run([sys.executable, str(root / 'packaging' / 'windows' / 'prepare_language.py'),
+                    str(resources / 'licenses' / 'inno-setup')], check=True)
 # Internal test marker, deliberately NOT a redistribution-license clearance.
 (resources / 'THIRD-PARTY-NOTICES.txt').write_text(
     'INTERNAL BUILD VALIDATION ONLY — NOT FOR REDISTRIBUTION.\n'

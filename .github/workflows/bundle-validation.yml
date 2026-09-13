@@ -86,7 +86,9 @@ jobs:
         run: |
           python -m pip install --only-binary=:all: -r packaging/windows/requirements-build.txt
           if ($LASTEXITCODE -ne 0) { throw 'Build dependency install failed' }
-          choco install ffmpeg innosetup --yes --no-progress
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg install failed' }
+          choco install innosetup --version=6.7.1 --yes --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'Build tools install failed' }
       - name: Unit and packaging contract tests
         shell: pwsh
@@ -126,6 +128,12 @@ jobs:
           if (Test-Path -LiteralPath $appDir) { throw 'Existing installation must not be overwritten in this test' }
           $installers = @(Get-ChildItem "$env:RUNNER_TEMP\native-build\release" -Filter '*.exe')
           if ($installers.Count -ne 1) { throw 'Exactly one installer required' }
+          $unrelated = "$env:RUNNER_TEMP\unrelated-install-target"
+          New-Item -ItemType Directory -Path $unrelated | Out-Null
+          $sentinel = Join-Path $unrelated 'existing.txt'
+          Set-Content -LiteralPath $sentinel -Value 'must remain untouched'
+          $rejected = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-', ('/DIR="' + $unrelated + '"')) -Wait -PassThru
+          if ($rejected.ExitCode -eq 0 -or (Get-Content -LiteralPath $sentinel -Raw).Trim() -ne 'must remain untouched' -or (Get-ChildItem -LiteralPath $unrelated).Count -ne 1) { throw 'Unrelated installation target protection failed' }
           $process = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-') -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw 'Installer failed' }
           $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) '上字幕.lnk'
