@@ -26,6 +26,8 @@ for name in ['ffmpeg', 'ffprobe']:
 if sys.platform == 'win32':
     subprocess.run([sys.executable, str(root / 'packaging' / 'windows' / 'prepare_language.py'),
                     str(resources / 'licenses' / 'inno-setup')], check=True)
+subprocess.run([sys.executable, str(root / 'packaging' / 'component_inventory.py'),
+                str(resources)], check=True)
 # Internal test marker, deliberately NOT a redistribution-license clearance.
 (resources / 'THIRD-PARTY-NOTICES.txt').write_text(
     'INTERNAL BUILD VALIDATION ONLY — NOT FOR REDISTRIBUTION.\n'

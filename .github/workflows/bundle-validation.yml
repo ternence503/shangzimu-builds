@@ -120,7 +120,7 @@ jobs:
           if (-not $report.speech_transcribed_and_srt_exported) { throw 'Actual speech recognition and SRT evidence required' }
       - name: Relocate and execute complete Windows app
         shell: pwsh
-        run: ./packaging/windows/relocation_test.ps1 -BundleDir "$env:RUNNER_TEMP\native-build\dist\上字幕" -SpeechFile "$env:RUNNER_TEMP\speech.wav" -ReportFile "$env:RUNNER_TEMP\windows-relocation.json"
+        run: ./packaging/windows/relocation_test.ps1 -BundleDir "$env:RUNNER_TEMP\native-build\dist\上字幕" -SpeechFile "$env:RUNNER_TEMP\speech.wav" -ReportFile "$env:RUNNER_TEMP\windows-relocation.json" -EnableFirewallProfilesForDisposableCI
       - name: Install on disposable runner and verify start-menu shortcut
         shell: pwsh
         run: |
@@ -151,5 +151,5 @@ jobs:
       - name: Record limitations
         shell: pwsh
         run: |
-          'Native build, runner installation, shortcut target and speech/SRT probes; not GUI search, reboot, SmartScreen or end-user acceptance. Python socket calls blocked; Windows OS-level network denial not yet proven.' >> $env:GITHUB_STEP_SUMMARY
+          'Native build, runner installation, shortcut target and speech/SRT probes; not GUI search, reboot, SmartScreen or end-user acceptance. Relocation requires a real unpatched before/after application firewall probe; arbitrary subprocess network behavior is not covered.' >> $env:GITHUB_STEP_SUMMARY
           'No release, tags, binaries, model or audio artifacts are uploaded.' >> $env:GITHUB_STEP_SUMMARY

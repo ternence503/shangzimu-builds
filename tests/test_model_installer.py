@@ -15,6 +15,8 @@ spec.loader.exec_module(installer)
 
 class ModelInstallerTests(unittest.TestCase):
     def mock_download(self, **kwargs):
+        self.assertEqual(kwargs['repo_id'], installer.MODEL_REPO)
+        self.assertEqual(kwargs['revision'], installer.MODEL_REVISION)
         directory = Path(kwargs["local_dir"])
         directory.mkdir(parents=True, exist_ok=True)
         for name in installer.REQUIRED: (directory / name).write_bytes(b"synthetic model fixture")

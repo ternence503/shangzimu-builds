@@ -33,6 +33,8 @@ def self_test(base, report):
     socket.socket.connect = blocked
     socket.create_connection = blocked
     import tkinter as tk
+    import onnxruntime
+    onnxruntime.disable_telemetry_events()
     from faster_whisper import WhisperModel
     from opencc import OpenCC
     from download_model import model_ready
@@ -72,12 +74,34 @@ def self_test(base, report):
     assert len(app.notebook.tabs()) == 4
     root.update_idletasks(); root.destroy()
     report.write_text(json.dumps({'status':'passed', 'python_socket_calls_blocked':True,
+        'onnx_telemetry_disabled':True,
         'model_loaded':True, 'vad_silence_decoded':True, 'tk_gui_created':True,
         'speech_transcribed_and_srt_exported': bool(speech_text), 'synthetic_speech_text': speech_text,
         'tools':tools, 'executable':sys.executable, 'resources':str(base)}, ensure_ascii=False, indent=2), encoding='utf-8')
 
+def network_probe(report):
+    """CI-only TCP reachability control, before any socket monkeypatch/model import.
+
+    No media or HTTP request is sent. A baseline plus OS-blocked repeat is
+    required to establish network denial; this function alone proves neither.
+    """
+    import socket
+    evidence = {'endpoint':'example.com:443', 'connected':False,
+                'python_socket_patch_applied':False}
+    try:
+        with socket.create_connection(('example.com', 443), timeout=5):
+            evidence['connected'] = True
+    except OSError as error:
+        evidence['error_type'] = type(error).__name__
+    with Path(report).open('x', encoding='utf-8') as stream:
+        json.dump(evidence, stream, indent=2)
+    return evidence
+
 def main():
     base = configure()
+    if len(sys.argv) == 3 and sys.argv[1] == '--network-probe':
+        network_probe(Path(sys.argv[2]))
+        return
     if len(sys.argv) == 3 and sys.argv[1] == '--self-test':
         report = Path(sys.argv[2])
         try:
@@ -87,6 +111,8 @@ def main():
             report.write_text(json.dumps({'status':'failed','error':traceback.format_exc()}, ensure_ascii=False, indent=2), encoding='utf-8')
             raise
         return
+    import onnxruntime
+    onnxruntime.disable_telemetry_events()
     import whisper_gui_mac as gui
     gui.main()
 

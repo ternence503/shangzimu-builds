@@ -9,6 +9,8 @@ import time
 import uuid
 REQUIRED = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
 MARKER = ".model_ready.json"
+MODEL_REPO = "Systran/faster-whisper-small"
+MODEL_REVISION = "536b0662742c02347bc0e980a01041f333bce120"
 
 def digest(path):
     value = hashlib.sha256()
@@ -44,12 +46,12 @@ def download_model(name, output_dir, retries=3):
     for attempt in range(1, retries + 1):
         try:
             print(f"準備語音模型（第 {attempt}/{retries} 次）；只下載程式模型，不上傳音訊。", flush=True)
-            snapshot_download(repo_id="Systran/faster-whisper-small", local_dir=str(staging), allow_patterns=[*REQUIRED, "preprocessor_config.json"])
+            snapshot_download(repo_id=MODEL_REPO, revision=MODEL_REVISION, local_dir=str(staging), allow_patterns=[*REQUIRED, "preprocessor_config.json", "README.md", "LICENSE"])
             if any(not (staging / item).is_file() or (staging / item).stat().st_size == 0 for item in REQUIRED): raise ValueError("模型檔案不完整")
             model = WhisperModel(str(staging), device="cpu", compute_type="int8", local_files_only=True)
             del model
             files = {item: {"size": (staging / item).stat().st_size, "sha256": digest(staging / item)} for item in REQUIRED}
-            (staging / MARKER).write_text(json.dumps({"schema": 1, "model": name, "files": files}), encoding="utf-8")
+            (staging / MARKER).write_text(json.dumps({"schema": 1, "model": name, "source_repo": MODEL_REPO, "source_revision": MODEL_REVISION, "files": files}), encoding="utf-8")
             if target.exists(): target.rename(root / ("faster-small-backup-" + uuid.uuid4().hex[:8]))
             staging.rename(target)
             print("模型下載與本機載入驗證完成。", flush=True)

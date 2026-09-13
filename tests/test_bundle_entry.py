@@ -35,6 +35,37 @@ class BundleEntryTests(unittest.TestCase):
         self.assertEqual(calls[0].func.attr, 'freeze_support')
         self.assertEqual(calls[1].func.id, 'main')
 
+    def test_network_probe_has_real_baseline_and_denied_results(self):
+        spec = importlib.util.spec_from_file_location('bundle_entry_network', ENTRY)
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        import json
+        import socket
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as folder:
+            baseline = Path(folder) / 'baseline.json'
+            denied = Path(folder) / 'denied.json'
+            with patch.object(socket, 'create_connection', return_value=MagicMock()) as connect:
+                entry.network_probe(baseline)
+                connect.assert_called_once_with(('example.com', 443), timeout=5)
+            with patch.object(socket, 'create_connection', side_effect=TimeoutError):
+                entry.network_probe(denied)
+            self.assertTrue(json.loads(baseline.read_text(encoding='utf-8'))['connected'])
+            result = json.loads(denied.read_text(encoding='utf-8'))
+            self.assertFalse(result['connected'])
+            self.assertFalse(result['python_socket_patch_applied'])
+            with self.assertRaises(FileExistsError):
+                with patch.object(socket, 'create_connection', side_effect=TimeoutError):
+                    entry.network_probe(denied)
+
+    def test_normal_startup_disables_native_onnx_telemetry(self):
+        tree = ast.parse(ENTRY.read_text(encoding='utf-8'))
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main')
+        ordered = [ast.unparse(n) for n in main.body]
+        telemetry = next(i for i, text in enumerate(ordered) if text == 'onnxruntime.disable_telemetry_events()')
+        gui = next(i for i, text in enumerate(ordered) if text == 'gui.main()')
+        self.assertLess(telemetry, gui)
+
     def test_runtime_never_installs_or_downloads(self):
         text = ENTRY.read_text(encoding='utf-8')
         self.assertNotIn('snapshot_download', text)

@@ -13,6 +13,12 @@ datas = [(str(model), 'resources/models/faster-small'),
 notice = model.parent.parent / 'THIRD-PARTY-NOTICES.txt'
 if notice.is_file():
     datas.append((str(notice), 'resources'))
+licenses = notice.parent / 'licenses'
+if licenses.is_dir():
+    datas.append((str(licenses), 'resources/licenses'))
+inventory = notice.parent / 'components.json'
+if inventory.is_file():
+    datas.append((str(inventory), 'resources'))
 binaries = [(str(tools / name), 'resources/bin') for name in ['ffmpeg', 'ffprobe']]
 hiddenimports = []
 for package in ['faster_whisper', 'ctranslate2', 'onnxruntime', 'opencc']:
