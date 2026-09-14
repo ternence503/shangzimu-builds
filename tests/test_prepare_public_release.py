@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 import zipfile
 
@@ -58,7 +59,91 @@ class PreparePublicReleaseTests(unittest.TestCase):
             digest, name = line.split('  ', 1)
             self.assertEqual(release.sha256(self.output / name), digest)
         with zipfile.ZipFile(self.output / 'shangzimu-1.4.1-test-verification.zip') as archive:
-            self.assertEqual(len(archive.namelist()), 15)
+            self.assertEqual(len(archive.namelist()), 16)
+
+    def mixed_fixture(self):
+        self.repo = self.root / 'source'
+        self.repo.mkdir()
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(self.repo), *args], stderr=subprocess.PIPE).decode().strip()
+        self.git = git
+        git('init', '-q')
+        git('config', 'user.name', 'Synthetic QA')
+        git('config', 'user.email', 'qa@example.invalid')
+        workflow = self.repo / '.github/workflows/bundle-validation.yml'
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text(release.OLD_CONCURRENCY + '\n' + release.OLD_MSVC + '\n')
+        git('add', '.')
+        git('commit', '-qm', 'Synthetic old source')
+        old = git('rev-parse', 'HEAD')
+        workflow.write_text(release.NEW_CONCURRENCY + '\n' + release.NEW_MSVC + '\n')
+        batch = self.repo / 'packaging/windows/msvc_environment.cmd'
+        batch.parent.mkdir(parents=True)
+        batch.write_text(release.SAFE_MSVC_BATCH)
+        git('add', '.')
+        git('commit', '-qm', 'Synthetic reviewed quoting fix')
+        self.commit = git('rev-parse', 'HEAD')
+        mapping = {p: {'commit': self.commit if p == 'windows-x64' else old,
+                       'run_id': self.run_id if p == 'windows-x64' else '123455'} for p in release.PLATFORMS}
+        for platform, expected in mapping.items():
+            manifest = self.read_manifest(platform)
+            manifest.update(expected)
+            self.write_manifest(platform, manifest)
+        return mapping
+
+    def test_mixed_known_fix_and_provenance_archive(self):
+        mapping = self.mixed_fixture()
+        names = release.prepare(self.downloads, self.output, self.commit, self.run_id, mapping, self.repo)
+        self.assertEqual(len(names), 8)
+        with zipfile.ZipFile(self.output / 'shangzimu-1.4.1-test-verification.zip') as archive:
+            provenance = json.loads(archive.read('release-provenance.json'))
+            self.assertEqual(provenance['platforms'], mapping)
+            self.assertEqual(provenance['release_target_commit'], self.commit)
+            self.assertIn('.github/workflows/bundle-validation.yml', provenance['verified_source_differences']['mac-arm64'])
+
+    def test_mixed_mapping_requires_complete_exact_fields_and_repository(self):
+        mapping = self.mixed_fixture()
+        cases = [{}, dict(mapping, unknown=mapping['windows-x64']),
+                 dict(mapping, **{'mac-arm64': {'commit': 'main', 'run_id':'123455'}}),
+                 dict(mapping, **{'mac-arm64': {'commit': mapping['mac-arm64']['commit'], 'run_id':'wrong'}})]
+        for invalid in cases:
+            with self.assertRaises(ValueError):
+                release.prepare(self.downloads, self.output, self.commit, self.run_id, invalid, self.repo)
+        with self.assertRaises(ValueError):
+            release.prepare(self.downloads, self.output, self.commit, self.run_id, mapping)
+        wrong_run = {p: dict(v) for p, v in mapping.items()}
+        wrong_run['mac-arm64']['run_id'] = '999'
+        with self.assertRaises(ValueError):
+            release.prepare(self.downloads, self.output, self.commit, self.run_id, wrong_run, self.repo)
+
+    def test_mixed_product_or_recipe_changes_rejected(self):
+        mapping = self.mixed_fixture()
+        for name in ['gui.py', 'packaging/entry.py', 'packaging/build_minimal_ffmpeg.py']:
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('Synthetic changed source')
+            self.git('add', '.')
+            self.git('commit', '-qm', 'Synthetic forbidden product change')
+            target = self.git('rev-parse', 'HEAD')
+            with self.assertRaises(ValueError):
+                release.prepare(self.downloads, self.output, target, self.run_id, mapping, self.repo)
+        self.assertFalse(self.output.exists())
+
+    def test_mixed_arbitrary_workflow_or_unsafe_batch_rejected(self):
+        mapping = self.mixed_fixture()
+        workflow = self.repo / '.github/workflows/bundle-validation.yml'
+        workflow.write_text(workflow.read_text() + 'arbitrary-new-build-step\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Synthetic forbidden workflow change')
+        with self.assertRaises(ValueError):
+            release.prepare(self.downloads, self.output, self.git('rev-parse', 'HEAD'), self.run_id, mapping, self.repo)
+        workflow.write_text(release.NEW_CONCURRENCY + '\n' + release.NEW_MSVC + '\n')
+        batch = self.repo / 'packaging/windows/msvc_environment.cmd'
+        batch.write_text('set\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Synthetic forbidden environment dump')
+        with self.assertRaises(ValueError):
+            release.prepare(self.downloads, self.output, self.git('rev-parse', 'HEAD'), self.run_id, mapping, self.repo)
 
     def test_tampered_file_rejected_before_output(self):
         (self.downloads / 'mac-x86_64' / 'components.json').write_text('tampered')
