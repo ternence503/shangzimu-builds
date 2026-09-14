@@ -118,6 +118,20 @@ jobs:
           ./packaging/windows/Build.ps1 -PythonExe $python -PreparedResources "$env:RUNNER_TEMP\resources" -InnoCompiler $compiler -Version '1.4.1' -BuildRoot "$env:RUNNER_TEMP\native-build"
           $report = Get-Content "$env:RUNNER_TEMP\native-build\frozen-self-test.json" -Raw | ConvertFrom-Json
           if (-not $report.speech_transcribed_and_srt_exported) { throw 'Actual speech recognition and SRT evidence required' }
+      - name: Audit bundled Windows native dependencies
+        shell: pwsh
+        run: |
+          $bundle = "$env:RUNNER_TEMP\native-build\dist\上字幕"
+          $auditArguments = @('packaging/windows/check_dependencies.py', $bundle)
+          # NumPy and PyAV wheel loaders use these exact package DLL directories.
+          # Never search all bundle subdirectories or borrow the runner's MSVC runtime.
+          foreach ($relative in @('_internal/numpy.libs', '_internal/av.libs')) {
+            if (Test-Path -LiteralPath (Join-Path $bundle $relative) -PathType Container) {
+              $auditArguments += @('--dll-directory', $relative)
+            }
+          }
+          python @auditArguments
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native dependency audit failed' }
       - name: Relocate and execute complete Windows app
         shell: pwsh
         run: ./packaging/windows/relocation_test.ps1 -BundleDir "$env:RUNNER_TEMP\native-build\dist\上字幕" -SpeechFile "$env:RUNNER_TEMP\speech.wav" -ReportFile "$env:RUNNER_TEMP\windows-relocation.json" -EnableFirewallProfilesForDisposableCI
@@ -141,14 +155,33 @@ jobs:
           $shell = New-Object -ComObject WScript.Shell
           $shortcut = $shell.CreateShortcut($shortcutPath)
           $expectedTarget = Join-Path $appDir '上字幕.exe'
-          Write-Output ('Shortcut actual target: ' + $shortcut.TargetPath)
+          Write-Output ('WSH diagnostic target: ' + $shortcut.TargetPath)
+          Write-Output ('Shortcut bytes: ' + (Get-Item -LiteralPath $shortcutPath).Length)
+          if (-not (Test-Path -LiteralPath $expectedTarget -PathType Leaf)) { throw 'Installed executable missing' }
+          # Read the installed shortcut through the Windows Shell Unicode interface,
+          # independently of WSH, which returned an empty path in the prior run.
+          $explorerShell = New-Object -ComObject Shell.Application
+          $folder = $explorerShell.NameSpace([IO.Path]::GetDirectoryName($shortcutPath))
+          $item = $folder.ParseName([IO.Path]::GetFileName($shortcutPath))
+          if (-not $item -or -not $item.IsLink) { throw 'Installed shortcut is not a Shell link' }
+          $nativeLink = $item.GetLink
+          $actualTarget = $nativeLink.Path
+          Write-Output ('Windows Shell actual target: ' + $actualTarget)
           Write-Output ('Expected installed executable: ' + $expectedTarget)
-          python -c 'import os,sys; assert os.path.samefile(sys.argv[1],sys.argv[2]), "Shortcut must target the actual installed file"' $shortcut.TargetPath $expectedTarget
+          python -c 'import os,sys; assert os.path.samefile(sys.argv[1],sys.argv[2]), "Shortcut must target the actual installed file"' $actualTarget $expectedTarget
           if ($LASTEXITCODE -ne 0) { throw 'Start-menu shortcut target incorrect' }
           $env:WHISPER_PREVIEW_DATA_DIR = "$env:RUNNER_TEMP\installed-progress"
           $env:SHANGZIMU_TEST_AUDIO = "$env:RUNNER_TEMP\speech.wav"
           $reportPath = "$env:RUNNER_TEMP\installed-probe.json"
-          $process = Start-Process -FilePath $shortcut.TargetPath -WorkingDirectory $appDir -ArgumentList @('--self-test', ('"' + $reportPath + '"')) -Wait -PassThru
+          # Launch the actual .lnk with ShellExecute, not a substituted EXE path.
+          $startInfo = [Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = $shortcutPath
+          $startInfo.UseShellExecute = $true
+          $startInfo.WorkingDirectory = $appDir
+          $startInfo.Arguments = '--self-test "' + $reportPath + '"'
+          $process = [Diagnostics.Process]::Start($startInfo)
+          if (-not $process) { throw 'Shortcut launch did not provide a process handle' }
+          if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Shortcut launch timed out' }
           if ($process.ExitCode -ne 0) { throw 'Installed application failed' }
           $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
           if ($report.status -ne 'passed' -or -not $report.speech_transcribed_and_srt_exported) { throw 'Installed speech and SRT evidence required' }
