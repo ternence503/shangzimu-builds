@@ -11,7 +11,7 @@ env:
   SHANGZIMU_PRIVATE_REPOSITORY: ${{ github.event.repository.private }}
 
 concurrency:
-  group: bundled-validation-${{ github.ref }}
+  group: bundled-validation-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -139,7 +139,7 @@ jobs:
           $vsRoot = & 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vsRoot) { throw 'Native MSVC build environment missing' }
           $devCmd = Join-Path $vsRoot 'Common7\Tools\VsDevCmd.bat'
-          $devValues = & cmd.exe /d /s /c ('""' + $devCmd + '" -arch=x64 -host_arch=x64 >nul && set"')
+          $devValues = & cmd.exe /d /c packaging\windows\msvc_environment.cmd $devCmd
           if ($LASTEXITCODE -ne 0) { throw 'Native MSVC environment initialization failed' }
           foreach ($line in $devValues) {
             if ($line -match '^(PATH|LIB|INCLUDE|LIBPATH|VCToolsInstallDir|WindowsSdkDir|WindowsSDKVersion)=(.*)$') {
