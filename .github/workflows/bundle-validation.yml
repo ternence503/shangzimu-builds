@@ -27,6 +27,8 @@ jobs:
           - runner: macos-15
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -38,15 +40,20 @@ jobs:
       - name: Install native build-only dependencies
         run: |
           python -m pip install --only-binary=:all: -r packaging/windows/requirements-build.txt
-          brew install ffmpeg
           python -m pip check
-          python -m pip freeze > "$RUNNER_TEMP/dependency-lock.txt"
+      - name: Build source-matched offline media tools
+        run: |
+          python packaging/build_minimal_ffmpeg.py "$RUNNER_TEMP/media-tools"
+          python packaging/build_minimal_ffmpeg.py "$RUNNER_TEMP/media-libs" --development-libraries --source-archive "$RUNNER_TEMP/media-tools/ffmpeg-8.1.2.tar.xz"
+          python packaging/build_local_pyav.py --ffmpeg "$RUNNER_TEMP/media-libs/install" --output "$RUNNER_TEMP/local-pyav"
+          python -m pip check
+          python -m pip list --format=freeze --exclude pip > "$RUNNER_TEMP/dependency-lock.txt"
       - name: Unit and packaging contract tests
         run: |
           python -m unittest discover -s tests -q
           python -m unittest discover -s packaging/windows -p 'test*.py' -q
       - name: Prepare public model and resources
-        run: python packaging/ci_prepare.py "$RUNNER_TEMP/resources" --tools "$(dirname "$(command -v ffmpeg)")"
+        run: python packaging/ci_prepare.py "$RUNNER_TEMP/resources" --tools "$RUNNER_TEMP/media-tools/bin" --local-pyav-build "$RUNNER_TEMP/local-pyav/local-pyav-build.json" --pyav-source-materials "$RUNNER_TEMP/media-libs/source-materials"
       - name: Build native app
         run: python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}'
       - name: Native dependency closure review
@@ -110,12 +117,39 @@ jobs:
         run: |
           python -m pip install --only-binary=:all: -r packaging/windows/requirements-build.txt
           if ($LASTEXITCODE -ne 0) { throw 'Build dependency install failed' }
-          python -m pip freeze > "$env:RUNNER_TEMP\resolved-build-lock.txt"
-          if ($LASTEXITCODE -ne 0) { throw 'Resolved dependency lock failed' }
-          choco install ffmpeg --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg install failed' }
           choco install innosetup --version=6.7.1 --yes --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'Build tools install failed' }
+      - name: Build source-matched offline media tools
+        shell: pwsh
+        run: |
+          $nativePython = (Get-Command python).Source
+          if (-not (Test-Path 'C:\msys64\usr\bin\bash.exe')) {
+            choco install msys2 --yes --no-progress --params='/InstallDir:C:\msys64'
+            if ($LASTEXITCODE -ne 0) { throw 'MSYS2 installation failed' }
+          }
+          $env:MSYSTEM = 'MINGW64'
+          $env:CHERE_INVOKING = '1'
+          & 'C:\msys64\usr\bin\bash.exe' -lc 'pacman -S --noconfirm --needed mingw-w64-x86_64-gcc make'
+          if ($LASTEXITCODE -ne 0) { throw 'Native compiler install failed' }
+          $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;" + $env:PATH
+          & $nativePython packaging/build_minimal_ffmpeg.py "$env:RUNNER_TEMP\media-tools"
+          if ($LASTEXITCODE -ne 0) { throw 'Source-matched media tools build failed' }
+          & $nativePython packaging/build_minimal_ffmpeg.py "$env:RUNNER_TEMP\media-libs" --development-libraries --source-archive "$env:RUNNER_TEMP\media-tools\ffmpeg-8.1.2.tar.xz"
+          if ($LASTEXITCODE -ne 0) { throw 'Source-matched decoding libraries build failed' }
+          $vsRoot = & 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsRoot) { throw 'Native MSVC build environment missing' }
+          $devCmd = Join-Path $vsRoot 'Common7\Tools\VsDevCmd.bat'
+          $devValues = & cmd.exe /d /s /c ('""' + $devCmd + '" -arch=x64 -host_arch=x64 >nul && set"')
+          if ($LASTEXITCODE -ne 0) { throw 'Native MSVC environment initialization failed' }
+          foreach ($line in $devValues) {
+            if ($line -match '^(PATH|LIB|INCLUDE|LIBPATH|VCToolsInstallDir|WindowsSdkDir|WindowsSDKVersion)=(.*)$') {
+              [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+            }
+          }
+          & $nativePython packaging/build_local_pyav.py --ffmpeg "$env:RUNNER_TEMP\media-libs\install" --output "$env:RUNNER_TEMP\local-pyav"
+          if ($LASTEXITCODE -ne 0) { throw 'Source-matched PyAV wheel build failed' }
+          & $nativePython -m pip list --format=freeze --exclude pip > "$env:RUNNER_TEMP\resolved-build-lock.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'Resolved dependency lock failed' }
       - name: Unit and packaging contract tests
         shell: pwsh
         run: |
@@ -126,9 +160,7 @@ jobs:
       - name: Prepare resources and local speech fixture
         shell: pwsh
         run: |
-          $tool = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg' -Filter ffmpeg.exe -Recurse | Select-Object -First 1
-          if (-not $tool) { throw 'Native ffmpeg executable missing' }
-          python packaging/ci_prepare.py "$env:RUNNER_TEMP\resources" --tools $tool.Directory.FullName
+          python packaging/ci_prepare.py "$env:RUNNER_TEMP\resources" --tools "$env:RUNNER_TEMP\media-tools\bin" --local-pyav-build "$env:RUNNER_TEMP\local-pyav\local-pyav-build.json" --pyav-source-materials "$env:RUNNER_TEMP\media-libs\source-materials"
           if ($LASTEXITCODE -ne 0) { throw 'Resource preparation failed' }
           Add-Type -AssemblyName System.Speech
           $voice = New-Object System.Speech.Synthesis.SpeechSynthesizer
@@ -141,7 +173,9 @@ jobs:
           $env:SHANGZIMU_TEST_AUDIO = "$env:RUNNER_TEMP\speech.wav"
           $python = (Get-Command python).Source
           $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-          ./packaging/windows/Build.ps1 -PythonExe $python -PreparedResources "$env:RUNNER_TEMP\resources" -InnoCompiler $compiler -Version '1.4.1' -BuildRoot "$env:RUNNER_TEMP\native-build" -ResolvedDependencyLock "$env:RUNNER_TEMP\resolved-build-lock.txt"
+          $localWheels = @(Get-ChildItem "$env:RUNNER_TEMP\local-pyav\repaired" -Filter '*.whl')
+          if ($localWheels.Count -ne 1) { throw 'Exactly one source-built PyAV wheel required' }
+          ./packaging/windows/Build.ps1 -PythonExe $python -PreparedResources "$env:RUNNER_TEMP\resources" -InnoCompiler $compiler -Version '1.4.1' -BuildRoot "$env:RUNNER_TEMP\native-build" -ResolvedDependencyLock "$env:RUNNER_TEMP\resolved-build-lock.txt" -LocalPyAVWheel $localWheels[0].FullName -LocalPyAVProof "$env:RUNNER_TEMP\local-pyav\local-pyav-build.json"
           $report = Get-Content "$env:RUNNER_TEMP\native-build\frozen-self-test.json" -Raw | ConvertFrom-Json
           if (-not $report.speech_transcribed_and_srt_exported) { throw 'Actual speech recognition and SRT evidence required' }
       - name: Audit bundled Windows native dependencies

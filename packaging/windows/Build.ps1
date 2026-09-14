@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory=$true)][string]$InnoCompiler,
     [string]$Version = '1.4.0',
     [string]$ResolvedDependencyLock,
+    [string]$LocalPyAVWheel,
+    [string]$LocalPyAVProof,
     [string]$BuildRoot = (Join-Path $PSScriptRoot 'build-local')
 )
 $ErrorActionPreference = 'Stop'
@@ -31,8 +33,16 @@ if ($ResolvedDependencyLock) {
     $DependencyInput = [IO.Path]::GetFullPath($ResolvedDependencyLock)
 }
 Invoke-Checked -Exe $BuildPython -Arguments @('-m','pip','install','--only-binary=:all:','-r',$DependencyInput)
+if ($LocalPyAVWheel) {
+    if (-not (Test-Path -LiteralPath $LocalPyAVWheel -PathType Leaf) -or [IO.Path]::GetExtension($LocalPyAVWheel) -ne '.whl') { throw 'Exact locally built PyAV wheel required.' }
+    if (-not $LocalPyAVProof -or -not (Test-Path -LiteralPath $LocalPyAVProof -PathType Leaf)) { throw 'Local PyAV source-build proof required.' }
+    $PyAVProof = Get-Content -LiteralPath $LocalPyAVProof -Raw | ConvertFrom-Json
+    if ($PyAVProof.status -ne 'source-built-minimal-ffmpeg' -or $PyAVProof.av_version -ne '18.1.0' -or (Get-FileHash -LiteralPath $LocalPyAVWheel -Algorithm SHA256).Hash.ToLowerInvariant() -ne $PyAVProof.wheel_sha256) { throw 'PyAV wheel does not match source-build proof.' }
+    Invoke-Checked -Exe $BuildPython -Arguments @('-m','pip','install','--force-reinstall','--no-deps',[IO.Path]::GetFullPath($LocalPyAVWheel))
+    Invoke-Checked -Exe $BuildPython -Arguments @('-c', 'import av._core; assert all("--disable-gpl" in m["configuration"] and "--disable-autodetect" in m["configuration"] and "--enable-libx264" not in m["configuration"] and "--enable-libx265" not in m["configuration"] for m in av._core.library_meta.values()), "Actual freeze environment must load the source-built minimal FFmpeg libraries"')
+}
 Invoke-Checked -Exe $BuildPython -Arguments @('-m','pip','check')
-& $BuildPython -m pip freeze | Set-Content -LiteralPath (Join-Path $BuildRoot 'dependency-lock.txt') -Encoding UTF8
+& $BuildPython -m pip list --format=freeze --exclude pip | Set-Content -LiteralPath (Join-Path $BuildRoot 'dependency-lock.txt') -Encoding UTF8
 if ($LASTEXITCODE -ne 0) { throw 'Dependency lock could not be recorded.' }
 # The supplied resources must include real CT2 model files and redistribution notices.
 # No model or binary is downloaded by the finished app.
