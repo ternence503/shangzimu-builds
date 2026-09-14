@@ -148,7 +148,11 @@ def prepare(downloads, output, commit, run_id, platform_provenance=None, source_
             'limitations': 'Native job success must be checked independently against GitHub; this helper does not certify CI job results.'
         }, ensure_ascii=False, indent=2))
         for platform, (directory, installer) in selected.items():
-            shutil.copyfile(directory / installer, output / installer)
+            # GitHub strips non-ASCII asset characters; publish stable names
+            # while retaining the original CI basename in provenance records.
+            signing = 'unnotarized' if platform.startswith('mac-') else 'unsigned'
+            published_installer = f'shangzimu-1.4.1-{platform}-test-{signing}{PLATFORMS[platform]}'
+            shutil.copyfile(directory / installer, output / published_installer)
             shutil.copyfile(directory / 'source-and-license-materials.zip',
                             output / f'shangzimu-1.4.1-{platform}-sources.zip')
             for name in ('source-and-checksums.json', 'reviewed-materials-manifest.json', 'components.json',

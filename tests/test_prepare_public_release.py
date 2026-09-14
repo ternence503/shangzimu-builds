@@ -55,6 +55,10 @@ class PreparePublicReleaseTests(unittest.TestCase):
         self.assertEqual(len(names), 8)
         self.assertEqual(sum(n.endswith('.pkg') for n in names), 2)
         self.assertEqual(sum(n.endswith('.exe') for n in names), 1)
+        self.assertTrue(all(n.isascii() for n in names))
+        self.assertIn('shangzimu-1.4.1-mac-arm64-test-unnotarized.pkg', names)
+        self.assertIn('shangzimu-1.4.1-mac-x86_64-test-unnotarized.pkg', names)
+        self.assertIn('shangzimu-1.4.1-windows-x64-test-unsigned.exe', names)
         for line in (self.output / 'SHA256SUMS.txt').read_text().splitlines():
             digest, name = line.split('  ', 1)
             self.assertEqual(release.sha256(self.output / name), digest)
