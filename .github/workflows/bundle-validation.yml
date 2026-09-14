@@ -124,7 +124,7 @@ jobs:
       - name: Install on disposable runner and verify start-menu shortcut
         shell: pwsh
         run: |
-          $appDir = Join-Path $env:LOCALAPPDATA 'Programs\ShangZiMu'
+          $appDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\ShangZiMu'
           if (Test-Path -LiteralPath $appDir) { throw 'Existing installation must not be overwritten in this test' }
           $installers = @(Get-ChildItem "$env:RUNNER_TEMP\native-build\release" -Filter '*.exe')
           if ($installers.Count -ne 1) { throw 'Exactly one installer required' }
@@ -140,7 +140,11 @@ jobs:
           if (-not (Test-Path -LiteralPath $shortcutPath)) { throw 'Start-menu shortcut missing' }
           $shell = New-Object -ComObject WScript.Shell
           $shortcut = $shell.CreateShortcut($shortcutPath)
-          if ($shortcut.TargetPath -ne (Join-Path $appDir '上字幕.exe')) { throw 'Start-menu shortcut target incorrect' }
+          $expectedTarget = Join-Path $appDir '上字幕.exe'
+          Write-Output ('Shortcut actual target: ' + $shortcut.TargetPath)
+          Write-Output ('Expected installed executable: ' + $expectedTarget)
+          python -c 'import os,sys; assert os.path.samefile(sys.argv[1],sys.argv[2]), "Shortcut must target the actual installed file"' $shortcut.TargetPath $expectedTarget
+          if ($LASTEXITCODE -ne 0) { throw 'Start-menu shortcut target incorrect' }
           $env:WHISPER_PREVIEW_DATA_DIR = "$env:RUNNER_TEMP\installed-progress"
           $env:SHANGZIMU_TEST_AUDIO = "$env:RUNNER_TEMP\speech.wav"
           $reportPath = "$env:RUNNER_TEMP\installed-probe.json"
