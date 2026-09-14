@@ -1,6 +1,6 @@
 # 上字幕 Windows 原生完整封裝
 
-狀態：建置方案與靜態檢查已準備；**尚未在 Windows 建置、安裝或實機驗收，不能視為完成品。**
+狀態（2026-09-14）：GitHub Windows Server 2022 原生建置、實際 frozen 語音／SRT、Inno 安裝器及安裝已執行。移動至中文／空白路徑的 App 已通過真實系統防火牆連線前後對照與離線辨識。已安裝捷徑仍在複驗，並新增 PE 依賴稽核；**這不是乾淨 Windows 10/11、搜尋／重啟／SmartScreen 或最終交付完成的證明。**
 
 ## 決策
 
@@ -19,9 +19,14 @@ resources/
   examples/排版示範.json
   guide.txt
   THIRD-PARTY-NOTICES.txt
+  licenses/{components.json,python-packages/,inno-setup/ChineseTraditional.isl,...}
 ```
 
 FFmpeg 與 FFprobe 必須是 Windows x64 PE；notices 必須涵蓋實際 binaries 的授權、來源、版本與必要 source offer，不可把 Mac binaries 改副檔名。模型必須附 schema 1 的完整 SHA256 manifest、通過 `download_model.model_ready(full=True)`，並可 `WhisperModel(..., local_files_only=True)` 載入；還需模型授權、套件授權合規覆核。
+
+`ci_prepare.py` 固定模型來源 revision；`prepare_language.py` 固定 Inno 6.7.1 繁體中文語言來源及 hash。元件清單／原始 notices 收集是 inventory-only，不等於再散布授權全部完成。CI 不上传安裝成品、模型或音訊。
+
+`check_dependencies.py` 稽核 x64 PE 的直接／延遲 imports，不借用建置機 MSVC runtime。只有精確宣告的 NumPy／PyAV loader 目錄及系統 Win32／API-set 名稱可解析；不會用所有子目錄的同名 DLL 掩蓋缺漏。靜態 imports 不涵蓋任意 `LoadLibrary` 或硬體驅動。
 
 在 Windows 執行：
 

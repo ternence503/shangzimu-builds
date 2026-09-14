@@ -35,6 +35,12 @@ class PEAuditTests(unittest.TestCase):
         self.assertEqual(audit.audit_graph(self.root, self.images)['status'], 'needs-review')
         self.assertEqual(audit.audit_graph(self.root, self.images, ['_internal/av.libs'])['status'], 'passed')
 
+    def test_documented_win32_components_are_not_vc_runtime(self):
+        for name in ('AVICAP32.dll', 'imagehlp.dll', 'pdh.dll', 'COMCTL32.dll'):
+            self.assertTrue(audit.system_import(name))
+        for name in ('MSVCP140.dll', 'VCOMP140.dll', 'CONCRT140.dll'):
+            self.assertFalse(audit.system_import(name))
+
     def test_ambiguous_candidate_and_wrong_architecture_fail(self):
         self.images[self.root / 'app.exe']['imports'].append('custom.dll')
         self.image('custom.dll'); self.image('_internal/custom.dll')

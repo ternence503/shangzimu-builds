@@ -11,7 +11,12 @@ SYSTEM_DLLS = set(('kernel32 kernelbase ntdll user32 gdi32 gdi32full win32u '
     'powrprof psapi dbghelp dbgcore winhttp wininet urlmon wtsapi32 userenv '
     'usp10 setupapi cfgmgr32 msimg32 wintrust secur32 sspicli mpr netapi32 '
     'netutils srvcli wkscli authz avrt dwmapi uxtheme propsys sxs mfplat '
-    'mfreadwrite mfuuid dxgi d3d9 d3d11 d3d12 dxva2 opengl32 glu32').split())
+    'mfreadwrite mfuuid dxgi d3d9 d3d11 d3d12 dxva2 opengl32 glu32 '
+    'avicap32 imagehlp pdh comctl32').split())
+# These four imports were observed in the native wheel/FFmpeg audit and
+# checked against Microsoft Win32 API Requirements (DLL/minimum Windows):
+# capCreateCaptureWindowW, MapAndLoad, PdhOpenQueryW, InitCommonControlsEx.
+# They are Windows components, unlike separately installed MSVC runtimes.
 
 def system_import(name):
     lower = name.lower()
