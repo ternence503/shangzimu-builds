@@ -22,7 +22,15 @@ class PrivateDeliveryTests(unittest.TestCase):
         self.installer.write_bytes(b'synthetic installer fixture, not an executable')
         self.output = self.root / 'delivery'
         self.env = {'GITHUB_ACTIONS':'true', 'GITHUB_REPOSITORY':delivery.REPOSITORY,
-                    'SHANGZIMU_PRIVATE_REPOSITORY':'true', 'GITHUB_SHA':'a' * 40, 'GITHUB_RUN_ID':'123'}
+                    'SHANGZIMU_PRIVATE_REPOSITORY':'false', 'GITHUB_EVENT_NAME':'workflow_dispatch', 'GITHUB_SHA':'a' * 40, 'GITHUB_RUN_ID':'123'}
+        (self.resources / 'licenses').mkdir()
+        (self.resources / 'licenses/LICENSE').write_text('Synthetic license test fixture')
+        (self.resources / 'THIRD-PARTY-NOTICES.txt').write_text('Synthetic reviewed notices test fixture')
+        self.materials = self.resources / 'reviewed-materials-manifest.json'
+        self.materials.write_text(json.dumps({'schema':1, 'status':'reviewed-for-public-test',
+            'inventory_sha256':delivery.sha256(self.resources / 'components.json'),
+            'files':[{'path':n, 'sha256':delivery.sha256(self.resources / n)} for n in
+                     ['THIRD-PARTY-NOTICES.txt', 'licenses/LICENSE']]}))
         self.reports = [self.root / name for name in ('probe.json', 'installed-probe.json')]
         for report in self.reports:
             self.write_report(report, {'status':'passed', 'returncode':0,
@@ -47,10 +55,40 @@ class PrivateDeliveryTests(unittest.TestCase):
         self.assertEqual({r['role'] for r in json.loads(saved)}, {'relocated', 'installed'})
         self.assertEqual(set(p.name for p in self.output.iterdir()),
                          {installer_name, 'components.json', 'actual-build-dependency-lock.txt',
-                          'acceptance-evidence.json', 'source-and-checksums.json'})
+                          'acceptance-evidence.json', 'source-and-checksums.json',
+                          'reviewed-materials-manifest.json', 'source-and-license-materials.zip'})
+
+    def test_unreviewed_or_changed_materials_prevent_installer_upload(self):
+        original = self.materials.read_text()
+        data = json.loads(original)
+        data['status'] = 'pending'
+        self.materials.write_text(json.dumps(data))
+        with self.assertRaises(ValueError): self.stage()
+        self.materials.write_text(original)
+        (self.resources / 'licenses/LICENSE').write_text('changed')
+        with self.assertRaises(ValueError): self.stage()
+        self.assertFalse(self.output.exists())
+
+    def test_unsafe_and_missing_original_materials_rejected(self):
+        data = json.loads(self.materials.read_text())
+        for relative in ['../LICENSE', '/etc/passwd', 'licenses\\LICENSE', 'C:LICENSE']:
+            data['files'][1]['path'] = relative
+            self.materials.write_text(json.dumps(data))
+            with self.assertRaises(ValueError): self.stage()
+        self.assertFalse(self.output.exists())
+
+    def test_public_workflow_does_not_skip_jobs_or_upload_unreviewed_installers(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/bundle-validation.yml').read_text()
+        self.assertEqual(workflow.count('github.event.repository.private == false'), 2)
+        self.assertNotIn('github.event.repository.private == true', workflow)
+        self.assertEqual(workflow.count('if: always()'), 2)
+        self.assertEqual(workflow.count('name: materials-review-'), 2)
+        self.assertEqual(workflow.count('name: public-test-'), 2)
+        self.assertIn('Require actual speech recognition evidence', workflow)
+        self.assertIn('EnableFirewallProfilesForDisposableCI', workflow)
 
     def test_private_repo_and_commit_guards(self):
-        for key, wrong in [('GITHUB_REPOSITORY','ternence503/whisper-gui'), ('SHANGZIMU_PRIVATE_REPOSITORY','false'), ('GITHUB_SHA','main')]:
+        for key, wrong in [('GITHUB_REPOSITORY','ternence503/whisper-gui'), ('SHANGZIMU_PRIVATE_REPOSITORY','true'), ('GITHUB_EVENT_NAME','push'), ('GITHUB_SHA','main')]:
             original = self.env[key]
             self.env[key] = wrong
             with self.assertRaises(ValueError): self.stage()

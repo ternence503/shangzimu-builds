@@ -19,6 +19,9 @@ if licenses.is_dir():
 inventory = notice.parent / 'components.json'
 if inventory.is_file():
     datas.append((str(inventory), 'resources'))
+material_manifest = notice.parent / 'reviewed-materials-manifest.json'
+if material_manifest.is_file():
+    datas.append((str(material_manifest), 'resources'))
 binaries = [(str(tools / name), 'resources/bin') for name in ['ffmpeg', 'ffprobe']]
 hiddenimports = []
 for package in ['faster_whisper', 'ctranslate2', 'onnxruntime', 'opencc']:

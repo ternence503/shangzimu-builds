@@ -1,4 +1,4 @@
-name: Private internal installers and validation
+name: Public unsigned test installers and validation
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   mac:
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'ternence503/shangzimu-builds' && github.event.repository.private == true
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'ternence503/shangzimu-builds' && github.event.repository.private == false
     name: Mac ${{ matrix.arch }} build and offline probe
     strategy:
       fail-fast: false
@@ -70,19 +70,32 @@ jobs:
       - name: Record limitations
         run: |
           echo 'Native build, runner installation and offline execution probe; not Developer ID notarization or end-user GUI search/reboot acceptance.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Private internal installer artifacts only. No Release, tags or standalone audio/model artifacts. Not cleared for redistribution.' >> "$GITHUB_STEP_SUMMARY"
-      - name: Stage explicit internal installer and evidence
+          echo 'Unsigned public-test installer upload requires reviewed source/license materials. No automatic Release or tags; no standalone audio/model artifacts.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload material-only review evidence (never installers or audio)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: materials-review-mac-${{ matrix.arch }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/resources/components.json
+            ${{ runner.temp }}/resources/THIRD-PARTY-NOTICES.txt
+            ${{ runner.temp }}/resources/licenses/
+            ${{ runner.temp }}/resources/source-materials/
+          retention-days: 7
+          compression-level: 6
+          if-no-files-found: warn
+      - name: Stage reviewed public test installer and evidence
         run: python packaging/private_delivery.py --platform 'mac-${{ matrix.arch }}' --installer "$RUNNER_TEMP/internal.pkg" --resources "$RUNNER_TEMP/resources" --lock "$RUNNER_TEMP/dependency-lock.txt" --report "$RUNNER_TEMP/probe.json" --report "$RUNNER_TEMP/installed-probe.json" --output "$RUNNER_TEMP/private-delivery"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: internal-unnotarized-not-for-redistribution-mac-${{ matrix.arch }}-${{ github.run_id }}
+          name: public-test-unnotarized-mac-${{ matrix.arch }}-${{ github.run_id }}
           path: ${{ runner.temp }}/private-delivery/*
           retention-days: 7
           compression-level: 0
           if-no-files-found: error
 
   windows:
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'ternence503/shangzimu-builds' && github.event.repository.private == true
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'ternence503/shangzimu-builds' && github.event.repository.private == false
     runs-on: windows-2022
     timeout-minutes: 40
     steps:
@@ -202,17 +215,30 @@ jobs:
         shell: pwsh
         run: |
           'Native build, runner installation, shortcut target and speech/SRT probes; not GUI search, reboot, SmartScreen or end-user acceptance. Relocation requires a real unpatched before/after application firewall probe; arbitrary subprocess network behavior is not covered.' >> $env:GITHUB_STEP_SUMMARY
-          'Private internal installer artifacts only. No Release, tags or standalone audio/model artifacts. Not cleared for redistribution.' >> $env:GITHUB_STEP_SUMMARY
-      - name: Stage explicit internal installer and evidence
+          'Unsigned public-test installer upload requires reviewed source/license materials. No automatic Release or tags; no standalone audio/model artifacts.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload material-only review evidence (never installers or audio)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: materials-review-windows-x64-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/resources/components.json
+            ${{ runner.temp }}/resources/THIRD-PARTY-NOTICES.txt
+            ${{ runner.temp }}/resources/licenses/
+            ${{ runner.temp }}/resources/source-materials/
+          retention-days: 7
+          compression-level: 6
+          if-no-files-found: warn
+      - name: Stage reviewed public test installer and evidence
         shell: pwsh
         run: |
           $installers = @(Get-ChildItem "$env:RUNNER_TEMP\native-build\release" -Filter '*.exe')
           if ($installers.Count -ne 1) { throw 'Exactly one installer required for staging' }
           python packaging/private_delivery.py --platform windows-x64 --installer $installers[0].FullName --resources "$env:RUNNER_TEMP\resources" --lock "$env:RUNNER_TEMP\native-build\dependency-lock.txt" --report "$env:RUNNER_TEMP\native-build\frozen-self-test.json" --report "$env:RUNNER_TEMP\windows-relocation.json" --report "$env:RUNNER_TEMP\installed-probe.json" --output "$env:RUNNER_TEMP\private-delivery"
-          if ($LASTEXITCODE -ne 0) { throw 'Private installer evidence staging failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed public installer evidence staging failed' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: internal-unsigned-not-for-redistribution-windows-x64-${{ github.run_id }}
+          name: public-test-unsigned-windows-x64-${{ github.run_id }}
           path: ${{ runner.temp }}/private-delivery/*
           retention-days: 7
           compression-level: 0

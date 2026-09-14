@@ -1,4 +1,4 @@
-"""Stage only explicitly approved CI installer/evidence files for private storage."""
+"""Stage reviewed, explicitly selected unsigned public-test installers and evidence."""
 import argparse
 import hashlib
 import json
@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import zipfile
 
 UPSTREAM_SHA = 'cc226d71864a4e36c70deb6be572f1ad1ff7111b'
 REPOSITORY = 'ternence503/shangzimu-builds'
@@ -44,14 +45,42 @@ def sha256(path):
             digest.update(block)
     return digest.hexdigest()
 
+def reviewed_materials(resources, inventory):
+    """Verify reviewed source/notices payload; inventory alone never authorizes staging."""
+    path = resources / 'reviewed-materials-manifest.json'
+    if not path.is_file() or path.is_symlink():
+        raise ValueError('Reviewed public-test materials manifest required')
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if (data.get('schema') != 1 or data.get('status') != 'reviewed-for-public-test'
+            or data.get('inventory_sha256') != sha256(inventory)):
+        raise ValueError('Reviewed materials must match this native build inventory')
+    entries = data.get('files', [])
+    names = set()
+    for entry in entries:
+        relative = entry.get('path', '')
+        part = Path(relative)
+        if (not relative or part.is_absolute() or '\\' in relative or ':' in relative
+                or '..' in part.parts or relative in names):
+            raise ValueError('Unique safe relative material paths required')
+        file = resources / part
+        if (not file.is_file() or any((resources / Path(*part.parts[:i])).is_symlink()
+                                     for i in range(1, len(part.parts) + 1))
+                or sha256(file) != entry.get('sha256')):
+            raise ValueError('Reviewed material missing, linked or hash mismatched')
+        names.add(relative)
+    if 'THIRD-PARTY-NOTICES.txt' not in names or not any(n.startswith('licenses/') for n in names):
+        raise ValueError('Reviewed notices and original license/source materials required')
+    return path
+
 def stage(platform, installer, resources, lock, reports, output, environment=None):
     env = os.environ if environment is None else environment
     if (env.get('GITHUB_ACTIONS') != 'true' or env.get('GITHUB_REPOSITORY') != REPOSITORY
-            or env.get('SHANGZIMU_PRIVATE_REPOSITORY', '').lower() != 'true'):
-        raise ValueError('Private approved CI repository required')
+            or env.get('SHANGZIMU_PRIVATE_REPOSITORY', '').lower() != 'false'
+            or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'):
+        raise ValueError('Exact approved public manual CI repository required')
     private_sha = env.get('GITHUB_SHA', '')
     if not re.fullmatch('[0-9a-f]{40}', private_sha):
-        raise ValueError('Exact private source commit required')
+        raise ValueError('Exact public source commit required')
     if platform not in PLATFORMS:
         raise ValueError('Unsupported platform')
     installer, resources, lock, output = map(Path, (installer, resources, lock, output))
@@ -62,9 +91,13 @@ def stage(platform, installer, resources, lock, reports, output, environment=Non
         raise ValueError('Inventory, actual build lock and reports required')
     compare_versions(json.loads(inventory.read_text(encoding='utf-8-sig')),
                      lock.read_text(encoding='utf-8-sig'))
-    # Bound seven-day artifact storage for the approved three-platform batch.
-    if sum(p.stat().st_size for p in (installer, inventory, lock)) + 1024 * 1024 > 1024 ** 3:
-        raise ValueError('Each private artifact must remain below 1 GiB')
+    materials = reviewed_materials(resources, inventory)
+    material_files = json.loads(materials.read_text(encoding='utf-8'))['files']
+    # Bound both installer and downloadable corresponding-source material payload.
+    if (sum(p.stat().st_size for p in (installer, inventory, lock, materials))
+            + sum((resources / e['path']).stat().st_size for e in material_files)
+            + 1024 * 1024 > 1024 ** 3):
+        raise ValueError('Each public test artifact must remain below 1 GiB')
     sanitized = []
     roles = set()
     for report in reports:
@@ -99,22 +132,27 @@ def stage(platform, installer, resources, lock, reports, output, environment=Non
     if roles != required_roles:
         raise ValueError('Complete installed and relocated report set required')
     output.mkdir(parents=True, exist_ok=False)
-    name = f'上字幕-1.4.1-{platform}-內部驗證未正式簽署{PLATFORMS[platform]}'
+    name = f'上字幕-1.4.1-{platform}-公開測試未正式簽署{PLATFORMS[platform]}'
     shutil.copyfile(installer, output / name)
     shutil.copyfile(inventory, output / 'components.json')
     shutil.copyfile(lock, output / 'actual-build-dependency-lock.txt')
+    shutil.copyfile(materials, output / 'reviewed-materials-manifest.json')
+    with zipfile.ZipFile(output / 'source-and-license-materials.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.write(materials, 'reviewed-materials-manifest.json')
+        for entry in material_files:
+            archive.write(resources / entry['path'], entry['path'])
     (output / 'acceptance-evidence.json').write_text(
         json.dumps(sanitized, ensure_ascii=False, indent=2), encoding='utf-8')
     files = {p.name: {'sha256': sha256(p), 'size': p.stat().st_size} for p in output.iterdir()}
     manifest = {
-        'schema': 1, 'status': 'internal-validation-only-not-for-redistribution',
-        'platform': platform, 'private_repository': REPOSITORY, 'private_commit': private_sha,
+        'schema': 1, 'status': 'unsigned-public-test-not-final',
+        'platform': platform, 'repository': REPOSITORY, 'commit': private_sha,
         'verified_upstream_repository': 'ternence503/whisper-gui',
         'verified_upstream_commit': UPSTREAM_SHA, 'verified_upstream_run': 34793061049,
-        'private_run_id': env.get('GITHUB_RUN_ID'), 'files': files,
+        'run_id': env.get('GITHUB_RUN_ID'), 'files': files,
         'limitations': ['Not Developer ID/notarized or Authenticode signed.',
                         'Not fresh end-user OS search/reboot acceptance.',
-                        'Inventory versions match the actual freeze lock; native component/source clearance remains incomplete.'],
+                        'Inventory versions match the actual freeze lock; reviewed materials are hashed, not a blanket legal certification.'],
     }
     (output / 'source-and-checksums.json').write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
