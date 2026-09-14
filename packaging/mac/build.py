@@ -33,8 +33,14 @@ subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
     str(Path(__file__).with_name('app.spec'))], env=env, check=True)
 app = args.dist / '上字幕.app'
 shutil.copytree(args.separator, app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals', symlinks=True)
-from normalize_vocal_worker import normalize
+from normalize_vocal_worker import normalize, prune_unused_sox
 normalize(app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals')
+prune_unused_sox(app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals')
+# PyInstaller may mirror binary/data resource folders independently. Expose the
+# post-copied worker to the runtime's Frameworks/resources view as well.
+worker_view = app / 'Contents/Frameworks/resources/workers'
+if not worker_view.exists():
+    worker_view.symlink_to('../../Resources/resources/workers', target_is_directory=True)
 # Finder metadata from input resources is not executable content. Remove only
 # these metadata attributes on the generated artifact; never strip quarantine.
 for attribute in ['com.apple.FinderInfo', 'com.apple.ResourceFork']:
