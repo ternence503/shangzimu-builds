@@ -9,7 +9,7 @@ model = Path(os.environ['SHANGZIMU_MODEL_DIR'])
 tools = Path(os.environ['SHANGZIMU_TOOLS_DIR'])
 datas = [(str(model), 'resources/models/faster-small'),
          (str(source.parent / '範例'), 'resources/examples'),
-         (str(source.parent / '新手指南.txt'), 'resources/guide.txt')]
+         (str(model.parent.parent / 'guide.txt'), 'resources')]
 notice = model.parent.parent / 'THIRD-PARTY-NOTICES.txt'
 if notice.is_file():
     datas.append((str(notice), 'resources'))

@@ -20,7 +20,7 @@ assert not resources.exists(), 'Use a fresh resources directory'
 resources.mkdir(parents=True)
 download_model('small', resources / 'models')
 shutil.copytree(source / '範例', resources / 'examples')
-shutil.copyfile(source / '新手指南.txt', resources / 'guide.txt')
+shutil.copyfile(root / 'packaging' / 'bundled-guide.txt', resources / 'guide.txt')
 (resources / 'bin').mkdir()
 for name in ['ffmpeg', 'ffprobe']:
     filename = name + ('.exe' if sys.platform == 'win32' else '')
