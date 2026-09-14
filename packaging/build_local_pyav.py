@@ -29,7 +29,7 @@ def exports(text):
     return names
 
 
-def build(prefix, output):
+def build(prefix, output, source_archive=None):
     prefix = prefix.resolve()
     output = output.resolve()
     if output.exists():
@@ -51,12 +51,18 @@ def build(prefix, output):
             definition.write_text('LIBRARY ' + dll.name + '\nEXPORTS\n' + '\n'.join(symbols) + '\n', encoding='ascii')
             subprocess.run(['lib', '/nologo', '/def:' + str(definition), '/machine:x64',
                             '/out:' + str(prefix / 'lib' / (library + '.lib'))], check=True)
-    metadata = json.loads(fetch('https://pypi.org/pypi/av/' + AV_VERSION + '/json'))
-    sdist = next(x for x in metadata['urls'] if x['packagetype'] == 'sdist')
-    data = fetch(sdist['url'])
-    if digest(data) != sdist['digests']['sha256']:
+    if source_archive:
+        data = source_archive.read_bytes()
+        filename = 'av-' + AV_VERSION + '.tar.gz'
+        expected = '47bfc286e1bc9de7ab4681fc2b575cd2460a66919d31ffe1bd5aa54fae531a28'
+    else:
+        metadata = json.loads(fetch('https://pypi.org/pypi/av/' + AV_VERSION + '/json'))
+        sdist = next(x for x in metadata['urls'] if x['packagetype'] == 'sdist')
+        data = fetch(sdist['url'])
+        filename, expected = sdist['filename'], sdist['digests']['sha256']
+    if digest(data) != expected:
         raise ValueError('PyAV sdist digest mismatch')
-    archive = output / sdist['filename']
+    archive = output / filename
     archive.write_bytes(data)
     with tarfile.open(archive) as source:
         source.extractall(output, filter='data')
@@ -108,5 +114,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ffmpeg', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--source-archive', type=Path)
     args = parser.parse_args()
-    build(args.ffmpeg, args.output)
+    build(args.ffmpeg, args.output, args.source_archive)

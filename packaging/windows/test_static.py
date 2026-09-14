@@ -28,8 +28,16 @@ class PackagingContract(unittest.TestCase):
                          PYZ=lambda *a, **k: None, EXE=lambda *a, **k: None,
                          COLLECT=lambda *a, **k: None)
         with tempfile.TemporaryDirectory() as resources:
+            separator = Path(resources) / 'worker'
+            separator.mkdir()
+            (separator / 'VocalWorker.exe').write_bytes(b'test fixture')
+            models = Path(resources) / 'vocal-models'
+            models.mkdir()
+            (models / 'vocals-b62c91ce.pth').write_bytes(b'test fixture')
             with patch.dict("sys.modules", {"PyInstaller.utils.hooks": hooks}), \
-                 patch.dict("os.environ", {"SHANGZIMU_BUILD_RESOURCES": resources}), \
+                 patch.dict("os.environ", {"SHANGZIMU_BUILD_RESOURCES": resources,
+                                           "SHANGZIMU_SEPARATOR_DIR": str(separator),
+                                           "SHANGZIMU_SEPARATOR_MODELS": str(models)}), \
                  patch("platform.system", return_value="Windows"), \
                  patch("platform.machine", return_value="AMD64"):
                 exec(compile((HERE / "up-subtitles.spec").read_text(encoding='utf-8'), "spec", "exec"), namespace)

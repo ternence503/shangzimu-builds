@@ -1,4 +1,4 @@
-"""Self-contained application entry; never installs or downloads at runtime."""
+"""Self-contained entry; public extra models download only when selected."""
 from pathlib import Path
 import os
 import sys
@@ -22,8 +22,11 @@ def configure():
     data.mkdir(parents=True, exist_ok=True)
     os.environ['WHISPER_APP_DATA_DIR'] = str(data)
     os.environ['WHISPER_PREVIEW_DATA_DIR'] = str(data)
-    for key in ['WHISPER_PREVIEW', 'WHISPER_PREVIEW_LOCAL_ONLY', 'HF_HUB_OFFLINE', 'HF_HUB_DISABLE_TELEMETRY']:
+    for key in ['WHISPER_PREVIEW', 'WHISPER_PREVIEW_LOCAL_ONLY', 'HF_HUB_DISABLE_TELEMETRY']:
         os.environ[key] = '1'
+    # Decoder loads local files only. Public model downloads and explicitly
+    # confirmed cloud TTS no longer inherit the limited-preview offline toggle.
+    os.environ.pop('HF_HUB_OFFLINE', None)
     return base
 
 def self_test(base, report):
@@ -98,7 +101,13 @@ def network_probe(report):
     return evidence
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] in ('--full-self-test', '--tts-self-test') and not os.environ.get('WHISPER_PREVIEW_DATA_DIR'):
+        raise RuntimeError('Acceptance requires an isolated test data directory; user projects must not be read.')
     base = configure()
+    if len(sys.argv) == 3 and sys.argv[1] in ('--full-self-test', '--tts-self-test'):
+        from full_acceptance import run
+        run(base, Path(sys.argv[2]), cloud=sys.argv[1] == '--tts-self-test')
+        return
     if len(sys.argv) == 3 and sys.argv[1] == '--network-probe':
         network_probe(Path(sys.argv[2]))
         return

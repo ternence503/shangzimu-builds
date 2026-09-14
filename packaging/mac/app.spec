@@ -9,7 +9,14 @@ model = Path(os.environ['SHANGZIMU_MODEL_DIR'])
 tools = Path(os.environ['SHANGZIMU_TOOLS_DIR'])
 datas = [(str(model), 'resources/models/faster-small'),
          (str(source.parent / '範例'), 'resources/examples'),
-         (str(model.parent.parent / 'guide.txt'), 'resources')]
+         (str(root / 'packaging' / 'guide-full.txt'), 'resources')]
+separator = Path(os.environ['SHANGZIMU_SEPARATOR_DIR'])
+separator_models = Path(os.environ['SHANGZIMU_SEPARATOR_MODELS'])
+if not (separator / 'VocalWorker').is_file() or not (separator_models / 'vocals-b62c91ce.pth').is_file():
+    raise ValueError('Complete local separation worker and model required')
+# Copy the independent worker after freeze: reclassifying its DLLs here could
+# rewrite its loader paths or merge its NumPy libraries with the GUI runtime.
+datas += [(str(separator_models), 'resources/models/vocals')]
 notice = model.parent.parent / 'THIRD-PARTY-NOTICES.txt'
 if notice.is_file():
     datas.append((str(notice), 'resources'))
@@ -24,12 +31,12 @@ if material_manifest.is_file():
     datas.append((str(material_manifest), 'resources'))
 binaries = [(str(tools / name), 'resources/bin') for name in ['ffmpeg', 'ffprobe']]
 hiddenimports = []
-for package in ['faster_whisper', 'ctranslate2', 'onnxruntime', 'opencc']:
+for package in ['faster_whisper', 'ctranslate2', 'onnxruntime', 'opencc', 'edge_tts']:
     d, b, h = collect_all(package)
     datas += d; binaries += b; hiddenimports += h
 a = Analysis([str(root / 'packaging' / 'entry.py')], pathex=[str(source)],
              binaries=binaries, datas=datas, hiddenimports=hiddenimports,
-             excludes=['torch', 'demucs', 'edge_tts'], noarchive=False)
+             excludes=['torch', 'demucs', 'tensorflow'], noarchive=False)
 # Broad hooks collect optional standalone C API / audio-plugin libraries that
 # are not imported by our CPU ONNX Python binding or file-transcription path.
 # Remove only these names. Closure audit and real offline decoding must still
@@ -43,9 +50,9 @@ pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='ShangZiMu',
           debug=False, strip=False, upx=False, console=False, target_arch=os.environ['SHANGZIMU_ARCH'])
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='ShangZiMu')
-app = BUNDLE(coll, name='上字幕.app', bundle_identifier='tw.ternence.shangzimu',
+app = BUNDLE(coll, name='上字幕.app', icon=str(root / 'packaging' / 'assets' / 'shangzimu.icns'), bundle_identifier='tw.ternence.shangzimu',
     info_plist={'CFBundleName':'上字幕', 'CFBundleDisplayName':'上字幕',
-                'CFBundleShortVersionString':'1.4.1', 'CFBundleVersion':'1',
+                'CFBundleShortVersionString':'1.5.0', 'CFBundleVersion':'1',
                 'LSApplicationCategoryType':'public.app-category.productivity',
                 'NSHighResolutionCapable':True,
-                'LSMinimumSystemVersion':'14.0'})
+                'LSMinimumSystemVersion':os.environ.get('SHANGZIMU_MIN_MACOS', '14.0')})

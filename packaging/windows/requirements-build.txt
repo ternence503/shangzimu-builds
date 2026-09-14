@@ -5,3 +5,4 @@ faster-whisper==1.2.1
 av==18.1.0
 ctranslate2==4.8.2
 opencc-python-reimplemented==0.1.7
+edge-tts==7.2.7

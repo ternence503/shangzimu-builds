@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -27,7 +28,7 @@ def load_app_methods():
     body = [ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0),
             ast.ClassDef(name='App', bases=[], keywords=[], decorator_list=[],
                          body=[n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names])]
-    ns = dict(copy=copy, json=json, os=os, Path=Path, serialize_document=serialize_document,
+    ns = dict(copy=copy, json=json, os=os, tempfile=tempfile, threading=threading, Path=Path, serialize_document=serialize_document,
               serialize_srt=serialize_srt, save_new_file=save_new_file,
               next_revision_path=next_revision_path, write_recovery=write_recovery,
               read_document=read_document, messagebox=Mock(), filedialog=Mock(),
@@ -42,6 +43,7 @@ class OnboardingTests(unittest.TestCase):
         self.App, self.ns = load_app_methods()
         self.app = self.App()
         a = self.app
+        a.stop_event = threading.Event()
         a.layout_result = [{'start': 0, 'end': 2, 'text': '測試\n字幕'}]
         a.layout_source = [{'start': 0, 'end': 2, 'text': '測試字幕'}]
         a.layout_source_path = '講座.json'
@@ -193,7 +195,7 @@ class OnboardingTests(unittest.TestCase):
         self.app._update_status = Mock()
         directory = str(Path(self.temp.name) / 'faster-small')
         with patch.dict(os.environ, {'WHISPER_FASTER_MODEL_DIR': directory}), \
-             patch('download_model.model_ready', return_value=True):
+             patch('full_model_manager.resolve_model', return_value=directory):
             first = self.app._get_faster_model('small')
             self.assertIs(self.app._get_faster_model('small'), first)
         constructor = self.ns['_FasterWhisperModel']
@@ -201,15 +203,25 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(constructor.call_args.args[0], directory)
         self.assertIs(constructor.call_args.kwargs['local_files_only'], True)
 
-    def test_missing_local_model_does_not_trigger_download(self):
+    def test_failed_model_preparation_does_not_construct_fallback(self):
         self.app.faster_model_cache = {}
-        with patch.dict(os.environ, {'WHISPER_FASTER_MODEL_DIR': ''}):
+        self.app._update_status = Mock()
+        with patch.dict(os.environ, {'WHISPER_FASTER_MODEL_DIR': ''}), \
+             patch('full_model_manager.resolve_model', side_effect=RuntimeError('模型準備失敗')):
             with self.assertRaises(RuntimeError):
                 self.app._get_faster_model('small')
         self.ns['_FasterWhisperModel'].assert_not_called()
         with self.assertRaises(RuntimeError):
             self.app._get_model('small')
         self.ns['whisper'].load_model.assert_not_called()
+
+    def test_switching_models_keeps_only_current_engine(self):
+        self.app.faster_model_cache = {}
+        self.app._update_status = Mock()
+        with patch('full_model_manager.resolve_model', return_value=self.temp.name):
+            for name in ('base', 'small', 'medium', 'large', 'turbo'):
+                self.app._get_faster_model(name)
+                self.assertEqual(list(self.app.faster_model_cache), [name])
 
     def test_installers_use_isolated_environment_and_common_local_model(self):
         mac = (INTERNAL / 'setup_and_run_mac.sh').read_text(encoding='utf-8')

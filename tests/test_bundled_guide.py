@@ -18,5 +18,6 @@ class BundledGuideTests(unittest.TestCase):
         mac = (ROOT / 'packaging/mac/app.spec').read_text(encoding='utf-8')
         windows = (ROOT / 'packaging/windows/up-subtitles.spec').read_text(encoding='utf-8')
         self.assertIn("root / 'packaging' / 'bundled-guide.txt'", preparation)
-        self.assertIn("(str(model.parent.parent / 'guide.txt'), 'resources')", mac)
+        self.assertIn("(str(root / 'packaging' / 'guide-full.txt'), 'resources')", mac)
+        self.assertIn("(str(root / 'guide-full.txt'), 'resources')", windows)
         self.assertIn('"resources"', windows)

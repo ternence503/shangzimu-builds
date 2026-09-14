@@ -11,7 +11,10 @@ parser.add_argument('app', type=Path)
 parser.add_argument('output', type=Path)
 args = parser.parse_args()
 with (args.app / 'Contents' / 'Info.plist').open('rb') as stream:
-    assert plistlib.load(stream)['CFBundleIdentifier'] == 'tw.ternence.shangzimu'
+    info = plistlib.load(stream)
+    assert info['CFBundleIdentifier'] == 'tw.ternence.shangzimu'
+    version = info['CFBundleShortVersionString']
+    assert len(version.split('.')) == 3 and all(part.isdigit() for part in version.split('.'))
 with tempfile.TemporaryDirectory(prefix='shangzimu-pkg-') as directory:
     staging = Path(directory)
     target = staging / 'payload' / 'Applications' / '上字幕.app'
@@ -36,4 +39,4 @@ with tempfile.TemporaryDirectory(prefix='shangzimu-pkg-') as directory:
     subprocess.run(['/usr/bin/pkgbuild', '--root', str(staging / 'payload'),
         '--component-plist', str(components),
         '--scripts', str(scripts), '--identifier', 'tw.ternence.shangzimu.installer',
-        '--version', '1.4.1', '--install-location', '/', str(args.output)], check=True)
+        '--version', version, '--install-location', '/', str(args.output)], check=True)

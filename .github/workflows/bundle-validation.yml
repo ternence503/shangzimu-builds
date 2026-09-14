@@ -55,7 +55,12 @@ jobs:
       - name: Prepare public model and resources
         run: python packaging/ci_prepare.py "$RUNNER_TEMP/resources" --tools "$RUNNER_TEMP/media-tools/bin" --local-pyav-build "$RUNNER_TEMP/local-pyav/local-pyav-build.json" --pyav-source-materials "$RUNNER_TEMP/media-libs/source-materials"
       - name: Build native app
-        run: python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}'
+        run: |
+          python -m venv "$RUNNER_TEMP/vocal-env"
+          "$RUNNER_TEMP/vocal-env/bin/python" -m pip install -r packaging/requirements-vocal-worker.txt
+          python packaging/prepare_vocal_model.py "$RUNNER_TEMP/vocal-model"
+          PYINSTALLER_CONFIG_DIR="$RUNNER_TEMP/vocal-cache" "$RUNNER_TEMP/vocal-env/bin/python" -m PyInstaller --noconfirm --distpath "$RUNNER_TEMP/vocal-dist" --workpath "$RUNNER_TEMP/vocal-freeze" packaging/vocal_worker.spec
+          python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}' --separator "$RUNNER_TEMP/vocal-dist/vocals" --separator-models "$RUNNER_TEMP/vocal-model"
       - name: Native dependency closure review
         run: python packaging/mac/check_dependencies.py "$RUNNER_TEMP/dist/上字幕.app" --pyinstaller
       - name: Generate non-private local speech fixture
@@ -170,12 +175,23 @@ jobs:
       - name: Build and execute actual frozen app
         shell: pwsh
         run: |
+          python -m venv "$env:RUNNER_TEMP\vocal-env"
+          if ($LASTEXITCODE -ne 0) { throw 'Vocal environment failed' }
+          $vocalPython = "$env:RUNNER_TEMP\vocal-env\Scripts\python.exe"
+          & $vocalPython -m pip install torch==2.2.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+          if ($LASTEXITCODE -ne 0) { throw 'CPU vocal dependencies failed' }
+          & $vocalPython -m pip install -r packaging/requirements-vocal-worker.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Vocal dependencies failed' }
+          python packaging/prepare_vocal_model.py "$env:RUNNER_TEMP\vocal-model"
+          if ($LASTEXITCODE -ne 0) { throw 'Vocal model verification failed' }
+          & $vocalPython -m PyInstaller --noconfirm --distpath "$env:RUNNER_TEMP\vocal-dist" --workpath "$env:RUNNER_TEMP\vocal-freeze" packaging/vocal_worker.spec
+          if ($LASTEXITCODE -ne 0) { throw 'Vocal worker freezing failed' }
           $env:SHANGZIMU_TEST_AUDIO = "$env:RUNNER_TEMP\speech.wav"
           $python = (Get-Command python).Source
           $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
           $localWheels = @(Get-ChildItem "$env:RUNNER_TEMP\local-pyav\repaired" -Filter '*.whl')
           if ($localWheels.Count -ne 1) { throw 'Exactly one source-built PyAV wheel required' }
-          ./packaging/windows/Build.ps1 -PythonExe $python -PreparedResources "$env:RUNNER_TEMP\resources" -InnoCompiler $compiler -Version '1.4.1' -BuildRoot "$env:RUNNER_TEMP\native-build" -ResolvedDependencyLock "$env:RUNNER_TEMP\resolved-build-lock.txt" -LocalPyAVWheel $localWheels[0].FullName -LocalPyAVProof "$env:RUNNER_TEMP\local-pyav\local-pyav-build.json"
+          ./packaging/windows/Build.ps1 -PythonExe $python -PreparedResources "$env:RUNNER_TEMP\resources" -InnoCompiler $compiler -Version '1.5.0' -BuildRoot "$env:RUNNER_TEMP\native-build" -ResolvedDependencyLock "$env:RUNNER_TEMP\resolved-build-lock.txt" -LocalPyAVWheel $localWheels[0].FullName -LocalPyAVProof "$env:RUNNER_TEMP\local-pyav\local-pyav-build.json" -SeparatorDir "$env:RUNNER_TEMP\vocal-dist\vocals" -SeparatorModels "$env:RUNNER_TEMP\vocal-model"
           $report = Get-Content "$env:RUNNER_TEMP\native-build\frozen-self-test.json" -Raw | ConvertFrom-Json
           if (-not $report.speech_transcribed_and_srt_exported) { throw 'Actual speech recognition and SRT evidence required' }
       - name: Audit bundled Windows native dependencies

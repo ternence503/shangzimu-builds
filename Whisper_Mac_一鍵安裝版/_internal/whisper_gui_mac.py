@@ -59,7 +59,7 @@ MEDIA_FILE_PATTERNS = (
 )
 
 APP_AUTHOR = "Ternence"
-APP_VERSION = "v1.4.0-layout-preview.6"
+APP_VERSION = "v1.5.0-full-test.1"
 APP_SIGNATURE = f"{APP_AUTHOR} {APP_VERSION}"
 TTS_VOICE_OPTIONS: Dict[str, str] = {
     # 台灣腔
@@ -489,7 +489,7 @@ class WhisperApp:
 
     def open_start_guide(self):
         resources = os.environ.get("SHANGZIMU_RESOURCES")
-        self._open_path(Path(resources) / "guide.txt" if resources else Path(__file__).resolve().parent.parent / "新手指南.txt")
+        self._open_path(Path(resources) / "guide-full.txt" if resources else Path(__file__).resolve().parent.parent / "新手指南.txt")
 
     def open_saved_folder(self):
         if self.last_saved_path:
@@ -544,13 +544,13 @@ class WhisperApp:
         tts_outer = ttk.Frame(self.notebook)
         tts_outer.columnconfigure(0, weight=1)
         tts_outer.rowconfigure(0, weight=1)
-        self.notebook.add(tts_outer, text="文字轉語音（雲端，內部試用停用）", state="disabled")
+        self.notebook.add(tts_outer, text="文字轉語音（雲端，傳送前確認）")
         self._build_tts_scrollable_tab(tts_outer)
 
         lyrics_frame = ttk.Frame(self.notebook, padding=20)
         lyrics_frame.columnconfigure(1, weight=1)
         lyrics_frame.rowconfigure(7, weight=1)
-        self.notebook.add(lyrics_frame, text="歌詞辨識（後續提供）", state="disabled")
+        self.notebook.add(lyrics_frame, text="歌詞辨識（本機）")
         self._build_lyrics_tab(lyrics_frame)
 
         layout_frame = ttk.Frame(self.notebook, padding=8)
@@ -1090,10 +1090,11 @@ class WhisperApp:
         model_box = ttk.Combobox(
             frame,
             textvariable=self.model_var,
-            values=["small"],
+            values=MODEL_OPTIONS,
             state="readonly",
         )
         model_box.grid(row=1, column=1, sticky="w", pady=(12, 0))
+        self.model_combo = model_box
 
         options_frame = ttk.Labelframe(
             frame,
@@ -1104,7 +1105,7 @@ class WhisperApp:
         options_frame.columnconfigure(1, weight=1)
 
         desc = (
-            "講座通用設定：small 模型，使用電腦本機處理，不上傳影音。"
+            "small 模型已內建；其他模型首次使用下載後即可離線。影音辨識在本機，不上傳影音。"
             " 長影片可能需要較久，完成後會自動進入字幕排版。"
         )
         ttk.Label(options_frame, text=desc, wraplength=640, foreground="#444").grid(
@@ -1213,7 +1214,7 @@ class WhisperApp:
 
         ttk.Checkbutton(
             options_frame,
-            text="先用 Demucs 分離人聲（去除背景音樂，提升辨識準確率；首次使用會下載模型約 80MB）",
+            text="先分離人聲（本機；降低伴奏干擾，仍需校對歌詞）",
             variable=self.lyrics_use_demucs_var,
         ).grid(row=1, column=0, columnspan=2, sticky="w")
 
@@ -1275,6 +1276,16 @@ class WhisperApp:
             messagebox.showinfo("提醒", "目前已有辨識正在進行")
             return
 
+        if self.worker_thread and self.worker_thread.is_alive():
+            messagebox.showinfo("請稍候", "語音轉字幕正在使用辨識引擎，完成或停止後再辨識歌詞。")
+            return
+        self.lyrics_output_dir = os.path.dirname(os.path.abspath(audio_path))
+        if not os.access(self.lyrics_output_dir, os.W_OK):
+            folder = filedialog.askdirectory(title="影音資料夾不能寫入，請選擇歌詞儲存資料夾")
+            if not folder:
+                return
+            self.lyrics_output_dir = folder
+
         self.lyrics_stop_event.clear()
         self._update_lyrics_control_states(True)
         worker = threading.Thread(
@@ -1289,9 +1300,8 @@ class WhisperApp:
         if not self.lyrics_worker_thread or not self.lyrics_worker_thread.is_alive():
             return
         self.lyrics_stop_event.set()
-        self._update_lyrics_status("已請求停止...")
+        self._update_lyrics_status("停止中；若正在準備模型，將於該步驟結束後停止。")
         self.lyrics_stop_button.config(state=tk.DISABLED)
-        self._interrupt_thread(self.lyrics_worker_thread)
 
     def _update_lyrics_status(self, message: str) -> None:
         self.root.after(0, lambda: self.lyrics_status_var.set(message))
@@ -1323,36 +1333,40 @@ class WhisperApp:
             vocal_path = audio_path
 
             if use_demucs:
-                self._update_lyrics_status("正在分離人聲（首次使用需下載 Demucs 模型約 80MB）...")
-                tmp_dir = tempfile.mkdtemp(prefix="whisper_demucs_")
-                proc = subprocess.run(
-                    [
-                        sys.executable, "-m", "demucs",
-                        "--two-stems=vocals", "--mp3",
-                        "-o", tmp_dir, audio_path,
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if proc.returncode != 0:
-                    err = proc.stderr.strip() or proc.stdout.strip()
-                    if "No module named demucs" in err:
-                        raise RuntimeError(
-                            "尚未安裝 Demucs，請重新執行 01-建立開發環境.command 後再試。"
-                        )
-                    raise RuntimeError(f"Demucs 分離失敗：{err}")
-
-                if self.lyrics_stop_event.is_set():
-                    raise SystemExit
-
-                vocals_found: List[str] = []
-                for root_dir, _dirs, files in os.walk(tmp_dir):
-                    for f in files:
-                        if f == "vocals.mp3":
-                            vocals_found.append(os.path.join(root_dir, f))
-                if not vocals_found:
-                    raise RuntimeError("找不到分離後的人聲檔案，請確認 ffmpeg 已安裝。")
-                vocal_path = vocals_found[0]
+                self._update_lyrics_status("正在本機分離人聲，音樂不會上傳...")
+                tmp_dir = tempfile.mkdtemp(prefix="shangzimu-vocals-")
+                vocal_path = os.path.join(tmp_dir, "vocals.wav")
+                resources = Path(os.environ.get("SHANGZIMU_RESOURCES", ""))
+                worker = resources / "workers" / "vocals" / ("VocalWorker.exe" if sys.platform == "win32" else "VocalWorker")
+                if not worker.is_file():
+                    raise RuntimeError("安裝包缺少人聲分離工具，請重新安裝完整版本。")
+                ffmpeg = self._find_ffmpeg()
+                if not ffmpeg:
+                    raise RuntimeError("安裝包缺少音訊工具，請重新安裝完整版本。")
+                # A separate executable owns PyTorch and a separate Python
+                # runtime. Never invoke the GUI executable as a Python CLI.
+                with open(os.path.join(tmp_dir, "worker.log"), "w+", encoding="utf-8") as log:
+                    worker_env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT='1')
+                    proc = subprocess.Popen([str(worker), "--input", audio_path,
+                        "--output", vocal_path, "--models", str(resources / "models" / "vocals"),
+                        "--ffmpeg", ffmpeg], stdout=log, stderr=log, env=worker_env)
+                    try:
+                        while proc.poll() is None:
+                            if self.lyrics_stop_event.wait(0.2):
+                                raise SystemExit
+                        if proc.returncode != 0:
+                            log.seek(0)
+                            raise RuntimeError("本機人聲分離失敗：" + log.read()[-3000:])
+                    finally:
+                        if proc.poll() is None:
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                                proc.wait(timeout=5)
+                if not os.path.isfile(vocal_path):
+                    raise RuntimeError("人聲分離未產生有效音訊。")
                 self._update_lyrics_status("人聲分離完成，載入模型中...")
             else:
                 self._update_lyrics_status("載入模型中...")
@@ -1406,7 +1420,7 @@ class WhisperApp:
     def _write_lyrics_outputs(
         self, audio_path: str, result: Dict[str, object]
     ) -> "tuple[Dict[str, str], str]":
-        base_dir = os.path.dirname(audio_path)
+        base_dir = getattr(self, 'lyrics_output_dir', None) or os.path.dirname(audio_path)
         audio_name = os.path.splitext(os.path.basename(audio_path))[0]
         detected_lang = str(result.get("language", "") or "").lower() or "auto"
 
@@ -1419,17 +1433,15 @@ class WhisperApp:
         text_lines = [line for line in text_lines if line]
         text_content = "\n".join(text_lines) if text_lines else result.get("text", "").strip()
 
-        txt_path = os.path.join(base_dir, f"{audio_name}_lyrics_{detected_lang}.txt")
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(text_content + "\n")
+        output_dir = Path(tempfile.mkdtemp(prefix=f"{audio_name}_lyrics_", dir=base_dir))
+        txt_path = str(output_dir / f"{audio_name}_lyrics_{detected_lang}.txt")
+        save_new_file(txt_path, text_content + "\n")
 
-        lrc_path = os.path.join(base_dir, f"{audio_name}_lyrics_{detected_lang}.lrc")
-        with open(lrc_path, "w", encoding="utf-8") as f:
-            f.write(_format_lrc(segments))
+        lrc_path = str(output_dir / f"{audio_name}_lyrics_{detected_lang}.lrc")
+        save_new_file(lrc_path, _format_lrc(segments))
 
-        srt_path = os.path.join(base_dir, f"{audio_name}_lyrics_{detected_lang}.srt")
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write(_format_srt(segments))
+        srt_path = str(output_dir / f"{audio_name}_lyrics_{detected_lang}.srt")
+        save_new_file(srt_path, _format_srt(segments))
 
         return {"txt": txt_path, "lrc": lrc_path, "srt": srt_path}, text_content
 
@@ -1633,6 +1645,10 @@ class WhisperApp:
             messagebox.showinfo("提醒", "目前已經有轉錄正在進行")
             return
 
+        if self.lyrics_worker_thread and self.lyrics_worker_thread.is_alive():
+            messagebox.showinfo("請稍候", "歌詞辨識正在使用辨識引擎，完成或停止後再轉錄。")
+            return
+
         self.transcribe_output_dir = os.path.dirname(os.path.abspath(audio_path))
         if not os.access(self.transcribe_output_dir, os.W_OK):
             messagebox.showinfo("選擇字幕儲存位置", "影音所在資料夾不能寫入。請選擇字幕的儲存資料夾，影音不會被修改。")
@@ -1658,7 +1674,6 @@ class WhisperApp:
         self.stop_event.set()
         self._update_status("已請求停止，將在目前片段完成後停止（大檔案可能需稍等）...")
         self.stop_button.config(state=tk.DISABLED)
-        self._interrupt_thread(self.worker_thread)
 
     def _interrupt_thread(self, thread: threading.Thread, exc_type=SystemExit) -> None:
         ident = thread.ident
@@ -1762,10 +1777,16 @@ class WhisperApp:
 
     def _get_faster_model(self, model_name: str) -> object:
         if model_name not in self.faster_model_cache:
-            from download_model import model_ready
-            directory = os.environ.get("WHISPER_FASTER_MODEL_DIR", "")
-            if model_name != "small" or not directory or not model_ready(directory):
-                raise RuntimeError(self._model_repair_message("本機語音模型未完整準備。"))
+            # Switching models must release the previous engine before loading
+            # another large model, rather than retaining all five in RAM.
+            self.faster_model_cache.clear()
+            from full_model_manager import resolve_model
+            directory = resolve_model(model_name,
+                os.environ.get("WHISPER_FASTER_MODEL_DIR", ""),
+                Path(os.environ.get("WHISPER_APP_DATA_DIR", tempfile.gettempdir())) / "models",
+                progress=self._update_status)
+            if self.stop_event.is_set() and self.worker_thread is threading.current_thread():
+                raise SystemExit
             self._update_status(
                 "載入本機語音模型中（不會連網下載），接著開始轉錄…"
             )
@@ -2281,6 +2302,12 @@ class WhisperApp:
             return
         if self.tts_worker_thread and self.tts_worker_thread.is_alive():
             messagebox.showinfo("提醒", "目前已經有文字轉語音正在進行")
+            return
+
+        if not messagebox.askyesno("文字將傳送至第三方雲端",
+                "此功能使用 Microsoft Edge 線上語音服務，並非本機運算。\n"
+                "以下文字將傳送至該服務；請勿包含未授權的公司機密或個資。\n\n"
+                f"共 {len(text)} 字，預覽：\n{text[:300]}\n\n是否同意傳送並產生語音？"):
             return
 
         output_path = self._get_tts_output_path()

@@ -8,6 +8,8 @@ param(
     [string]$ResolvedDependencyLock,
     [string]$LocalPyAVWheel,
     [string]$LocalPyAVProof,
+    [Parameter(Mandatory=$true)][string]$SeparatorDir,
+    [Parameter(Mandatory=$true)][string]$SeparatorModels,
     [string]$BuildRoot = (Join-Path $PSScriptRoot 'build-local')
 )
 $ErrorActionPreference = 'Stop'
@@ -51,11 +53,19 @@ $LanguageFile = Join-Path $PreparedResources 'licenses\inno-setup\ChineseTraditi
 if (-not (Test-Path -LiteralPath $LanguageFile -PathType Leaf)) { throw 'Prepared resources lack the pinned Traditional Chinese installer language.' }
 $OldResourceEnv = $env:SHANGZIMU_BUILD_RESOURCES
 $OldDataEnv = $env:WHISPER_PREVIEW_DATA_DIR
+$OldSeparatorEnv = $env:SHANGZIMU_SEPARATOR_DIR
+$OldSeparatorModelsEnv = $env:SHANGZIMU_SEPARATOR_MODELS
 try {
     $env:SHANGZIMU_BUILD_RESOURCES = [IO.Path]::GetFullPath($PreparedResources)
+    $env:SHANGZIMU_SEPARATOR_DIR = [IO.Path]::GetFullPath($SeparatorDir)
+    $env:SHANGZIMU_SEPARATOR_MODELS = [IO.Path]::GetFullPath($SeparatorModels)
     $DistDir = Join-Path $BuildRoot 'dist'
     Invoke-Checked -Exe $BuildPython -Arguments @('-m','PyInstaller','--noconfirm','--distpath',$DistDir,'--workpath',(Join-Path $BuildRoot 'pyinstaller'),(Join-Path $PSScriptRoot 'up-subtitles.spec'))
     $Bundle = Join-Path $DistDir '上字幕'
+    $WorkerDestination = Join-Path $Bundle '_internal\resources\workers\vocals'
+    if (Test-Path -LiteralPath $WorkerDestination) { throw 'Worker destination already exists; refusing merge.' }
+    New-Item -ItemType Directory -Path (Split-Path $WorkerDestination) -Force | Out-Null
+    Copy-Item -LiteralPath $SeparatorDir -Destination $WorkerDestination -Recurse
     $Exe = Join-Path $Bundle '上字幕.exe'
     $Report = Join-Path $BuildRoot 'frozen-self-test.json'
     $env:WHISPER_PREVIEW_DATA_DIR = Join-Path $BuildRoot 'isolated-user-data'
@@ -71,4 +81,6 @@ try {
 } finally {
     $env:SHANGZIMU_BUILD_RESOURCES = $OldResourceEnv
     $env:WHISPER_PREVIEW_DATA_DIR = $OldDataEnv
+    $env:SHANGZIMU_SEPARATOR_DIR = $OldSeparatorEnv
+    $env:SHANGZIMU_SEPARATOR_MODELS = $OldSeparatorModelsEnv
 }

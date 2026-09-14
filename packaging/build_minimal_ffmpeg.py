@@ -37,6 +37,9 @@ def build(destination, development_libraries=False, source_archive=None):
     if os.name == 'nt':
         flags += ['--cc=gcc', '--target-os=mingw32', '--arch=x86_64',
                   '--extra-ldflags=-static']
+    elif os.uname().sysname == 'Darwin':
+        flags += ['--extra-cflags=-mmacosx-version-min=14.0',
+                  '--extra-ldflags=-mmacosx-version-min=14.0']
     if development_libraries:
         flags = [flag for flag in flags if flag not in
                  ('--disable-shared', '--enable-static', '--enable-ffmpeg', '--enable-ffprobe',

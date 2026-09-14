@@ -5,6 +5,8 @@ import os
 import sys
 import subprocess
 import platform
+import shutil
+import sysconfig
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=Path, required=True)
@@ -12,6 +14,8 @@ parser.add_argument('--tools', type=Path, required=True)
 parser.add_argument('--dist', type=Path, required=True)
 parser.add_argument('--work', type=Path, required=True)
 parser.add_argument('--arch', choices=['x86_64', 'arm64'], default=platform.machine())
+parser.add_argument('--separator', type=Path, required=True)
+parser.add_argument('--separator-models', type=Path, required=True)
 args = parser.parse_args()
 assert sys.platform == 'darwin', 'Build on macOS'
 assert args.arch == platform.machine(), 'Use the target architecture native Python and dependencies'
@@ -21,11 +25,14 @@ from download_model import model_ready
 assert model_ready(args.model, full=True), 'Complete validated model required'
 for name in ['ffmpeg', 'ffprobe']:
     assert (args.tools / name).is_file(), name
-env = dict(os.environ, SHANGZIMU_MODEL_DIR=str(args.model.resolve()), SHANGZIMU_TOOLS_DIR=str(args.tools.resolve()), SHANGZIMU_ARCH=args.arch)
+env = dict(os.environ, SHANGZIMU_MODEL_DIR=str(args.model.resolve()), SHANGZIMU_TOOLS_DIR=str(args.tools.resolve()), SHANGZIMU_ARCH=args.arch,
+           SHANGZIMU_SEPARATOR_DIR=str(args.separator.resolve()), SHANGZIMU_SEPARATOR_MODELS=str(args.separator_models.resolve()),
+           SHANGZIMU_MIN_MACOS=str(max(14, int(str(sysconfig.get_config_var('MACOSX_DEPLOYMENT_TARGET') or '14').split('.')[0]))) + '.0')
 subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
     '--distpath', str(args.dist), '--workpath', str(args.work),
     str(Path(__file__).with_name('app.spec'))], env=env, check=True)
 app = args.dist / '上字幕.app'
+shutil.copytree(args.separator, app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals', symlinks=True)
 # Finder metadata from input resources is not executable content. Remove only
 # these metadata attributes on the generated artifact; never strip quarantine.
 for attribute in ['com.apple.FinderInfo', 'com.apple.ResourceFork']:

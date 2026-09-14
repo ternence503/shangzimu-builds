@@ -10,15 +10,20 @@ parser.add_argument('resources', type=Path)
 parser.add_argument('--tools', type=Path, required=True)
 parser.add_argument('--local-pyav-build', type=Path)
 parser.add_argument('--pyav-source-materials', type=Path)
+parser.add_argument('--validated-model', type=Path)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 source = root / 'Whisper_Mac_一鍵安裝版'
 sys.path.insert(0, str(source / '_internal'))
-from download_model import download_model
+from download_model import download_model, model_ready
 resources = args.resources.resolve()
 assert not resources.exists(), 'Use a fresh resources directory'
 resources.mkdir(parents=True)
-download_model('small', resources / 'models')
+if args.validated_model:
+    assert model_ready(args.validated_model, full=True), 'Validated complete small model required'
+    shutil.copytree(args.validated_model, resources / 'models' / 'faster-small')
+else:
+    download_model('small', resources / 'models')
 shutil.copytree(source / '範例', resources / 'examples')
 shutil.copyfile(root / 'packaging' / 'bundled-guide.txt', resources / 'guide.txt')
 (resources / 'bin').mkdir()

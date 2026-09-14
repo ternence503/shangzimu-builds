@@ -24,7 +24,7 @@ class BundleEntryTests(unittest.TestCase):
                 self.assertEqual(os.environ['WHISPER_FASTER_MODEL_DIR'], str(base / 'models' / 'faster-small'))
                 self.assertEqual(os.environ['WHISPER_APP_DATA_DIR'], str(data))
                 self.assertTrue(data.is_dir())
-                self.assertEqual(os.environ['HF_HUB_OFFLINE'], '1')
+                self.assertNotIn('HF_HUB_OFFLINE', os.environ)
                 self.assertEqual(os.environ['HF_HUB_DISABLE_TELEMETRY'], '1')
                 self.assertTrue(os.environ['PATH'].startswith(str(base / 'bin')))
 
