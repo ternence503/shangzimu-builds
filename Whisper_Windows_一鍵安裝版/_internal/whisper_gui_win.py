@@ -1792,7 +1792,7 @@ class WhisperApp:
             )
             try:
                 self.faster_model_cache[model_name] = _FasterWhisperModel(
-                    directory, device="cpu", compute_type=FASTER_COMPUTE_TYPE, local_files_only=True
+                    str(directory), device="cpu", compute_type=FASTER_COMPUTE_TYPE, local_files_only=True
                 )
             except Exception as exc:
                 raise RuntimeError(self._model_repair_message("模型無法載入。")) from exc

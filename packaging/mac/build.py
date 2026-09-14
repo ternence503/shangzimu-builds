@@ -33,6 +33,8 @@ subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
     str(Path(__file__).with_name('app.spec'))], env=env, check=True)
 app = args.dist / '上字幕.app'
 shutil.copytree(args.separator, app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals', symlinks=True)
+from normalize_vocal_worker import normalize
+normalize(app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals')
 # Finder metadata from input resources is not executable content. Remove only
 # these metadata attributes on the generated artifact; never strip quarantine.
 for attribute in ['com.apple.FinderInfo', 'com.apple.ResourceFork']:

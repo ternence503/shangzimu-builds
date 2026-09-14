@@ -223,6 +223,13 @@ class OnboardingTests(unittest.TestCase):
                 self.app._get_faster_model(name)
                 self.assertEqual(list(self.app.faster_model_cache), [name])
 
+    def test_model_manager_path_is_converted_for_native_constructor(self):
+        self.app.faster_model_cache = {}
+        self.app._update_status = Mock()
+        with patch('full_model_manager.resolve_model', return_value=Path(self.temp.name)):
+            self.app._get_faster_model('base')
+        self.assertIsInstance(self.ns['_FasterWhisperModel'].call_args.args[0], str)
+
     def test_installers_use_isolated_environment_and_common_local_model(self):
         mac = (INTERNAL / 'setup_and_run_mac.sh').read_text(encoding='utf-8')
         win = (ROOT / 'Whisper_Windows_一鍵安裝版' / '_internal' / 'setup_and_run.ps1').read_text(encoding='utf-8-sig')
