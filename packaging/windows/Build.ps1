@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory=$true)][string]$PreparedResources,
     [Parameter(Mandatory=$true)][string]$InnoCompiler,
     [string]$Version = '1.4.0',
+    [string]$ResolvedDependencyLock,
     [string]$BuildRoot = (Join-Path $PSScriptRoot 'build-local')
 )
 $ErrorActionPreference = 'Stop'
@@ -24,7 +25,12 @@ New-Item -ItemType Directory -Path $BuildRoot | Out-Null
 $Venv = Join-Path $BuildRoot 'venv'
 Invoke-Checked -Exe $PythonExe -Arguments @('-m', 'venv', $Venv)
 $BuildPython = Join-Path $Venv 'Scripts\python.exe'
-Invoke-Checked -Exe $BuildPython -Arguments @('-m','pip','install','--only-binary=:all:','-r',(Join-Path $PSScriptRoot 'requirements-build.txt'))
+$DependencyInput = Join-Path $PSScriptRoot 'requirements-build.txt'
+if ($ResolvedDependencyLock) {
+    if (-not (Test-Path -LiteralPath $ResolvedDependencyLock -PathType Leaf)) { throw 'Resolved dependency lock missing.' }
+    $DependencyInput = [IO.Path]::GetFullPath($ResolvedDependencyLock)
+}
+Invoke-Checked -Exe $BuildPython -Arguments @('-m','pip','install','--only-binary=:all:','-r',$DependencyInput)
 Invoke-Checked -Exe $BuildPython -Arguments @('-m','pip','check')
 & $BuildPython -m pip freeze | Set-Content -LiteralPath (Join-Path $BuildRoot 'dependency-lock.txt') -Encoding UTF8
 if ($LASTEXITCODE -ne 0) { throw 'Dependency lock could not be recorded.' }
