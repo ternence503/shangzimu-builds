@@ -156,11 +156,11 @@ def run(app, dynamic_roots=()):
         result['status'] = 'needs-review'
     return result
 
-def bootloader_python_root(app):
+def bootloader_python_root(app, executable=None, library_directory=None):
     """Read the actual PyInstaller archive cookie's dlopen library name."""
     import struct
     from PyInstaller.archive.readers import CArchiveReader
-    executable = app / 'Contents' / 'MacOS' / 'ShangZiMu'
+    executable = executable or app / 'Contents' / 'MacOS' / 'ShangZiMu'
     archive = CArchiveReader(str(executable))
     with executable.open('rb') as stream:
         stream.seek(archive._end_offset - archive._COOKIE_LENGTH)
@@ -168,7 +168,7 @@ def bootloader_python_root(app):
     name = library.rstrip(b'\0').decode('utf-8')
     if not name or Path(name).name != name or name in ('.', '..'):
         raise ValueError('Invalid bootloader Python library name')
-    return str(Path('Contents') / 'Frameworks' / name)
+    return str((library_directory or Path('Contents') / 'Frameworks') / name)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -177,10 +177,16 @@ if __name__ == '__main__':
                         help='Exact App-relative dlopen root; caller must establish runtime load evidence')
     parser.add_argument('--pyinstaller', action='store_true',
                         help='Establish the Python dlopen root from the actual executable archive cookie')
+    parser.add_argument('--vocal-worker', action='store_true',
+                        help='After actual worker execution: audit its bootloader Python and Torch global-deps dlopen roots')
     args = parser.parse_args()
     roots = list(args.dynamic_root)
     if args.pyinstaller:
         roots.append(bootloader_python_root(args.app))
+    if args.vocal_worker:
+        worker = Path('Contents/Resources/resources/workers/vocals')
+        roots.append(bootloader_python_root(args.app, args.app / worker / 'VocalWorker', worker / '_internal'))
+        roots.append(str(worker / '_internal/torch/lib/libtorch_global_deps.dylib'))
     result = run(args.app, roots)
     if args.pyinstaller:
         result['python_root_evidence'] = 'Actual PyInstaller executable archive cookie python_libname'
