@@ -46,12 +46,18 @@ def build(destination, development_libraries=False, source_archive=None):
         if os.name == 'nt':
             flags += ['--extra-ldflags=-static-libgcc']
     print('Configuring minimal FFmpeg build', flush=True)
-    subprocess.run(['bash', './configure', *flags], cwd=tree, check=True)
+    # Resolve an absolute executable: Windows otherwise selects System32's
+    # unrelated WSL bash before PATH, even with MSYS2 prepended to PATH.
+    shell = shutil.which('bash')
+    make = shutil.which('make')
+    if not shell or not make:
+        raise ValueError('Native build bash and make must be on PATH')
+    subprocess.run([shell, './configure', *flags], cwd=tree, check=True)
     print('Compiling minimal FFmpeg build', flush=True)
-    subprocess.run(['make', '-j', str(min(os.cpu_count() or 2, 4))], cwd=tree, check=True)
+    subprocess.run([make, '-j', str(min(os.cpu_count() or 2, 4))], cwd=tree, check=True)
     if development_libraries:
         print('Installing minimal shared development libraries', flush=True)
-        subprocess.run(['make', 'install'], cwd=tree, check=True)
+        subprocess.run([make, 'install'], cwd=tree, check=True)
     tools = destination / 'bin'
     tools.mkdir()
     for name in (() if development_libraries else ('ffmpeg', 'ffprobe')):

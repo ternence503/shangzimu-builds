@@ -12,7 +12,7 @@ env:
 
 concurrency:
   group: bundled-validation-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   mac:
