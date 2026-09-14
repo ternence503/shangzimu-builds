@@ -25,7 +25,7 @@ class NormalizationTests(unittest.TestCase):
             duplicate, loaded = self.fixture(root)
             module.normalize(root)
             self.assertTrue(duplicate.is_symlink())
-            self.assertEqual(duplicate.resolve(), loaded)
+            self.assertEqual(duplicate.resolve(), loaded.resolve())
             self.assertEqual(duplicate.read_bytes(), b'same')
             module.normalize(root)
 
