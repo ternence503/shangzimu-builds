@@ -78,6 +78,22 @@ class VocalMaterialsTests(unittest.TestCase):
         versions.update(torch='2.2.2+cpu', torchaudio='2.2.2+cpu')
         self.assertTrue(materials.reviewed_package_versions(versions))
 
+    def test_notice_hashes_are_bound_to_exact_wheel_variant(self):
+        versions = {name: allowed[0] for name, allowed in materials.REVIEWED_VERSIONS.items()}
+        hashes = {}
+        for name, by_version in materials.REQUIRED_NOTICE_HASH_OPTIONS.items():
+            hashes[name] = set(next(iter(by_version[versions[name]])))
+        self.assertTrue(materials.reviewed_notice_hashes(versions, hashes))
+
+        cpu_versions = dict(versions, torch='2.2.2+cpu', torchaudio='2.2.2+cpu')
+        cpu_hashes = dict(hashes)
+        for name in ('torch', 'torchaudio'):
+            cpu_hashes[name] = set(next(iter(
+                materials.REQUIRED_NOTICE_HASH_OPTIONS[name][cpu_versions[name]])))
+        self.assertTrue(materials.reviewed_notice_hashes(cpu_versions, cpu_hashes))
+        cpu_hashes['torch'] = {'0' * 64}
+        self.assertFalse(materials.reviewed_notice_hashes(cpu_versions, cpu_hashes))
+
 
 if __name__ == '__main__':
     unittest.main()

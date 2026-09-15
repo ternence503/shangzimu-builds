@@ -25,13 +25,25 @@ REVIEWED_VERSIONS = {
     'pyinstaller': ('6.22.0',), 'markupsafe': ('3.0.3',),
 }
 OPTIONAL_REVIEWED_VERSIONS = {'pyyaml': ('6.0.3',)}
-REQUIRED_NOTICE_HASHES = {
-    'torch': {'a11fb738314b6617c6ede596e94f11fc9e260f50487c1c105739056c46e4ef92',
-              'c2cc7bf0caec7652c2b460a8a470bea1677f241e4ab8e431df34cf17f5a9fec0'},
-    'torchaudio': {'93a58861a858cc108e6b6b833e08e76e8b2a66339e4a8007c8a5a8c1ff9c40d6'},
-    'numpy': {'080b68e8f70ebc82c180b7396936172d4331f1a18b17f496b9a9256131712cd8'},
-    'openunmix': {'4f7b047ffafb9fbb39a40d605bab961b9b030711addce6e9d23886c2ae3b105e'},
-    'pyinstaller': {'dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245'},
+REQUIRED_NOTICE_HASH_OPTIONS = {
+    'torch': {
+        '2.2.2': ({'a11fb738314b6617c6ede596e94f11fc9e260f50487c1c105739056c46e4ef92',
+                   'c2cc7bf0caec7652c2b460a8a470bea1677f241e4ab8e431df34cf17f5a9fec0'},),
+        '2.2.2+cpu': ({'aae77fb5112d9e5423771597ed67368c64fb42049d1c0426c67ff404bd841c39',
+                       '1c3dec6c0342c7ed9e12af59b296c7bb1d394af5cf881db74191cc8299efce5c'},),
+    },
+    'torchaudio': {
+        '2.2.2': ({'93a58861a858cc108e6b6b833e08e76e8b2a66339e4a8007c8a5a8c1ff9c40d6'},),
+        '2.2.2+cpu': ({'32638e179931bfe551eabf67b0e67a13b483e166b58dd7263634ab7f89f396f5'},),
+    },
+    'numpy': {
+        '1.26.4': (
+            {'080b68e8f70ebc82c180b7396936172d4331f1a18b17f496b9a9256131712cd8'},
+            {'e261222a74adff28f88160dac1c5cb302d93b67e9ca989eb83bf311e11a9970a'},
+        ),
+    },
+    'openunmix': {'1.3.0': ({'4f7b047ffafb9fbb39a40d605bab961b9b030711addce6e9d23886c2ae3b105e'},)},
+    'pyinstaller': {'6.22.0': ({'dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245'},)},
 }
 SOURCE_URLS = {
     'torch': 'https://github.com/pytorch/pytorch/tree/v2.2.2',
@@ -139,6 +151,15 @@ def reviewed_package_versions(package_versions):
         and all(package_versions.get(name) is None or package_versions.get(name) in versions
                 for name, versions in OPTIONAL_REVIEWED_VERSIONS.items())
     )
+
+
+def reviewed_notice_hashes(package_versions, notice_hashes):
+    for name, by_version in REQUIRED_NOTICE_HASH_OPTIONS.items():
+        options = by_version.get(package_versions.get(name), ())
+        if not options or not any(required <= notice_hashes.get(name, set())
+                                  for required in options):
+            return False
+    return True
 
 
 def reviewed_owner(relative_path, system, has_source_openmp):
@@ -250,10 +271,13 @@ def collect(worker, output, models, distributions=None, main_materials=None):
             payloads.append((destination, original.read_bytes()))
     package_versions = {canonical_name(item['name']): item['version'] for item in dist_records}
     versions_ok = reviewed_package_versions(package_versions)
-    hashes_ok = all(REQUIRED_NOTICE_HASHES[name] <= {entry['sha256'] for entry in notice_by_package.get(name, [])}
-                    for name in REQUIRED_NOTICE_HASHES)
+    notice_hashes = {
+        name: {entry['sha256'] for entry in notices}
+        for name, notices in notice_by_package.items()
+    }
+    hashes_ok = reviewed_notice_hashes(package_versions, notice_hashes)
     numpy_text = b''.join(data for destination, data in payloads if '/numpy-1.26.4/' in destination)
-    torch_text = b''.join(data for destination, data in payloads if '/torch-2.2.2/' in destination)
+    torch_text = b''.join(data for destination, data in payloads if '/torch-2.2.2' in destination)
     keyword_ok = (all(word in numpy_text for word in (b'OpenBLAS', b'GCC RUNTIME LIBRARY EXCEPTION', b'libquadmath'))
                   and b'PyTorch' in torch_text and b'Apache License' in torch_text)
     natives = []
