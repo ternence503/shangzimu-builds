@@ -44,10 +44,26 @@ class PEAuditTests(unittest.TestCase):
     def test_ambiguous_candidate_and_wrong_architecture_fail(self):
         self.images[self.root / 'app.exe']['imports'].append('custom.dll')
         self.image('custom.dll'); self.image('_internal/custom.dll')
+        (self.root / 'custom.dll').write_bytes(b'first')
+        (self.root / '_internal/custom.dll').write_bytes(b'second')
         self.assertEqual(audit.audit_graph(self.root, self.images)['status'], 'needs-review')
         self.images[self.root / 'app.exe']['imports'] = []
         self.images[self.root / 'custom.dll']['machine'] = 0x14c
         self.assertEqual(audit.audit_graph(self.root, self.images)['status'], 'needs-review')
+
+    def test_byte_identical_duplicate_candidate_is_recorded_and_allowed(self):
+        self.images[self.root / 'app.exe']['imports'].append('custom.dll')
+        self.image('custom.dll'); self.image('_internal/custom.dll')
+        (self.root / 'custom.dll').write_bytes(b'identical audited binary')
+        (self.root / '_internal/custom.dll').write_bytes(b'identical audited binary')
+
+        report = audit.audit_graph(self.root, self.images)
+
+        self.assertEqual(report['status'], 'passed')
+        resolution = next(item for item in report['resolutions']
+                          if item['dependency'] == 'custom.dll')
+        self.assertEqual(len(resolution['equivalent_candidates']), 2)
+        self.assertEqual(len(resolution['sha256']), 64)
 
     def test_invalid_directory_and_import_rejected(self):
         for path in ('../escape', '/absolute', 'missing'):

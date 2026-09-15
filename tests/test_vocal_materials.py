@@ -60,6 +60,14 @@ class VocalMaterialsTests(unittest.TestCase):
         records[1]['sha256'] = '3' * 64
         self.assertNotEqual(first, materials.native_set_digest(records))
 
+    def test_optional_reviewed_dependency_may_be_absent_but_not_changed(self):
+        versions = dict(materials.REVIEWED_VERSIONS)
+        self.assertTrue(materials.reviewed_package_versions(versions))
+        versions['pyyaml'] = materials.OPTIONAL_REVIEWED_VERSIONS['pyyaml']
+        self.assertTrue(materials.reviewed_package_versions(versions))
+        versions['pyyaml'] = '6.0.2'
+        self.assertFalse(materials.reviewed_package_versions(versions))
+
 
 if __name__ == '__main__':
     unittest.main()

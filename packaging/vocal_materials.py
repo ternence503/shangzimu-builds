@@ -21,8 +21,9 @@ SOX_NATIVE_RE = re.compile(r'(^|[/\\])[^/\\]*sox[^/\\]*(?:\.dll|\.pyd|\.so|\.dyl
 REVIEWED_VERSIONS = {
     'torch': '2.2.2', 'torchaudio': '2.2.2', 'numpy': '1.26.4',
     'openunmix': '1.3.0', 'pyinstaller': '6.22.0',
-    'markupsafe': '3.0.3', 'pyyaml': '6.0.3',
+    'markupsafe': '3.0.3',
 }
+OPTIONAL_REVIEWED_VERSIONS = {'pyyaml': '6.0.3'}
 REQUIRED_NOTICE_HASHES = {
     'torch': {'a11fb738314b6617c6ede596e94f11fc9e260f50487c1c105739056c46e4ef92',
               'c2cc7bf0caec7652c2b460a8a470bea1677f241e4ab8e431df34cf17f5a9fec0'},
@@ -127,6 +128,15 @@ def requires_source_openmp(native_records, system):
     """Whether this bundle claims an independently supplied OpenMP runtime."""
     return system == 'Darwin' and any(
         item.get('owner') == 'llvm-openmp' for item in native_records
+    )
+
+
+def reviewed_package_versions(package_versions):
+    return (
+        all(package_versions.get(name) == version
+            for name, version in REVIEWED_VERSIONS.items())
+        and all(package_versions.get(name) in (None, version)
+                for name, version in OPTIONAL_REVIEWED_VERSIONS.items())
     )
 
 
@@ -235,7 +245,7 @@ def collect(worker, output, models, distributions=None, main_materials=None):
             destination = 'licenses/native/llvm-openmp/' + original.relative_to(openmp_source).as_posix()
             payloads.append((destination, original.read_bytes()))
     package_versions = {canonical_name(item['name']): item['version'] for item in dist_records}
-    core_ok = all(package_versions.get(name) == version for name, version in REVIEWED_VERSIONS.items())
+    versions_ok = reviewed_package_versions(package_versions)
     hashes_ok = all(REQUIRED_NOTICE_HASHES[name] <= {entry['sha256'] for entry in notice_by_package.get(name, [])}
                     for name in REQUIRED_NOTICE_HASHES)
     numpy_text = b''.join(data for destination, data in payloads if '/numpy-1.26.4/' in destination)
@@ -281,7 +291,7 @@ def collect(worker, output, models, distributions=None, main_materials=None):
         if resolved_relative_path:
             item['symlink_resolved_relative_path'] = resolved_relative_path
         natives.append(item)
-    review_ok = core_ok and hashes_ok and keyword_ok and main_reviewed and not unresolved
+    review_ok = versions_ok and hashes_ok and keyword_ok and main_reviewed and not unresolved
     if requires_source_openmp(natives, platform.system()) and not has_source_openmp:
         review_ok = False
         unresolved.append('source-materials/llvm-openmp')

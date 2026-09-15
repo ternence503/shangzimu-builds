@@ -1,5 +1,6 @@
 """Conservative static PE import audit; never borrows the build host's runtimes."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -43,6 +44,13 @@ def _owning_runtime(image, runtime_roots):
 def _bundle_path(bundle, path):
     """Stable report path independent of the runner's native separator."""
     return Path(path).relative_to(bundle).as_posix()
+
+def _sha256(path):
+    result = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            result.update(block)
+    return result.hexdigest()
 
 def audit_graph(bundle, images, dll_directories=()):
     bundle = Path(bundle).resolve()
@@ -95,8 +103,19 @@ def audit_graph(bundle, images, dll_directories=()):
                 errors.append({'image':_bundle_path(bundle, image), 'dependency':name,
                                'reason':'external or unaudited candidate'})
             elif len(candidates) != 1:
-                errors.append({'image':_bundle_path(bundle, image), 'dependency':name,
-                               'reason':'ambiguous DLL directory search order'})
+                candidate_hashes = {_sha256(path) for path in candidates}
+                if len(candidate_hashes) != 1:
+                    errors.append({'image':_bundle_path(bundle, image), 'dependency':name,
+                                   'reason':'ambiguous DLL directory search order'})
+                    continue
+                resolutions.append({
+                    'image':_bundle_path(bundle, image), 'dependency':name,
+                    'resolved':_bundle_path(bundle, candidates[0]),
+                    'equivalent_candidates':[
+                        _bundle_path(bundle, path) for path in candidates
+                    ],
+                    'sha256':next(iter(candidate_hashes)),
+                })
             else:
                 resolutions.append({'image':_bundle_path(bundle, image), 'dependency':name,
                                     'resolved':_bundle_path(bundle, candidates[0])})

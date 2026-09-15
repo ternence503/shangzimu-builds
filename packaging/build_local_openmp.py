@@ -69,7 +69,9 @@ def build(output, source_cache=None):
             shutil.copyfile(original, archive)
         else:
             subprocess.run(['curl', '--fail', '--location', '--proto', '=https',
-                            '--proto-redir', '=https', '--max-time', '180',
+                            '--proto-redir', '=https', '--retry', '5',
+                            '--retry-all-errors', '--retry-delay', '2',
+                            '--connect-timeout', '30', '--max-time', '300',
                             '--max-filesize', str(20 * 1024 * 1024),
                             BASE + '/' + filename, '-o', str(archive)], check=True)
         if not 0 < archive.stat().st_size < 20 * 1024 * 1024:
