@@ -17,6 +17,18 @@ def run(base, report, cloud=False):
     root.withdraw()
     app = gui.WhisperApp(root)
     evidence = {'status': 'failed', 'cloud_test': cloud, 'resources': str(base)}
+    dialogs = []
+    # A headless acceptance must inspect, not wait on, every native message
+    # box scheduled by a worker or validation callback. Real GUI use retains
+    # the dialogs because this patch exists only inside the test process.
+    dialog_patcher = patch.multiple(
+        gui.messagebox,
+        showerror=lambda *args, **kwargs: dialogs.append(('error', args)),
+        showwarning=lambda *args, **kwargs: dialogs.append(('warning', args)),
+        showinfo=lambda *args, **kwargs: dialogs.append(('info', args)),
+        askyesno=lambda *args, **kwargs: False,
+    )
+    dialog_patcher.start()
     try:
         assert len(app.notebook.tabs()) == 4
         assert all(app.notebook.tab(tab, 'state') == 'normal' for tab in app.notebook.tabs())
@@ -105,5 +117,7 @@ def run(base, report, cloud=False):
                 evidence['cloud_refusal_without_output'] = True
         evidence['status'] = 'passed'
     finally:
+        evidence['headless_dialogs'] = len(dialogs)
+        dialog_patcher.stop()
         root.destroy()
         Path(report).write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf-8')
