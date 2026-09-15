@@ -77,7 +77,10 @@ def run(base, report, cloud=False):
                     assert app.layout_result
                     project = Path(directory) / 'synthetic-project.json'
                     subtitle = Path(directory) / 'synthetic-subtitle.srt'
-                    with patch.object(gui.filedialog, 'asksaveasfilename', return_value=str(project)):
+                    notices = []
+                    with (patch.object(gui.filedialog, 'asksaveasfilename', return_value=str(project)),
+                          patch.object(gui.messagebox, 'showwarning', lambda *args: notices.append(args)),
+                          patch.object(gui.messagebox, 'showinfo', lambda *args: notices.append(args))):
                         assert app.save_layout_project()
                     from subtitle_workspace import read_document, validate_cues
                     restored, metadata = read_document(project, with_metadata=True)
@@ -87,10 +90,13 @@ def run(base, report, cloud=False):
                     assert restored == validate_cues(app.layout_result), (restored, app.layout_result)
                     assert metadata['original_segments'] == validate_cues(app.layout_source)
                     assert metadata['settings'] == app._layout_settings()
-                    with patch.object(gui.filedialog, 'asksaveasfilename', return_value=str(subtitle)):
+                    with (patch.object(gui.filedialog, 'asksaveasfilename', return_value=str(subtitle)),
+                          patch.object(gui.messagebox, 'showwarning', lambda *args: notices.append(args)),
+                          patch.object(gui.messagebox, 'showinfo', lambda *args: notices.append(args))):
                         app.export_layout_srt()
                     assert subtitle.stat().st_size > 0
                     evidence['subtitle_project_roundtrip_and_srt'] = True
+                    evidence['nonblocking_review_notices'] = len(notices)
                 # Refusal must occur before any output or asynchronous work.
                 app._get_tts_effective_text = lambda: '內部資料，不得外傳'
                 with patch.object(gui.messagebox, 'askyesno', return_value=False), patch.object(app, '_get_tts_output_path', side_effect=AssertionError('output touched')):
