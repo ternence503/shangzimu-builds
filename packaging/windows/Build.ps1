@@ -66,6 +66,14 @@ try {
     if (Test-Path -LiteralPath $WorkerDestination) { throw 'Worker destination already exists; refusing merge.' }
     New-Item -ItemType Directory -Path (Split-Path $WorkerDestination) -Force | Out-Null
     Copy-Item -LiteralPath $SeparatorDir -Destination $WorkerDestination -Recurse
+    # Windows 10/11 provide UCRT and API-set forwarders as OS components.
+    # PyInstaller may copy redundant SDK redistributables into the nested
+    # worker; omit them so public artifacts do not redistribute Microsoft
+    # binaries without their separate license materials.
+    $WorkerInternal = Join-Path $WorkerDestination '_internal'
+    Get-ChildItem -LiteralPath $WorkerInternal -File | Where-Object {
+        $_.Name -like 'api-ms-win-*.dll' -or $_.Name -ieq 'ucrtbase.dll'
+    } | ForEach-Object { [IO.File]::Delete($_.FullName) }
     $Exe = Join-Path $Bundle '上字幕.exe'
     $Report = Join-Path $BuildRoot 'frozen-self-test.json'
     $env:WHISPER_PREVIEW_DATA_DIR = Join-Path $BuildRoot 'isolated-user-data'

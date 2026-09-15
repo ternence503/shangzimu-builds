@@ -25,6 +25,11 @@ class VocalMaterialsTests(unittest.TestCase):
             self.assertEqual(materials.reviewed_owner(path, 'Darwin', False), owner)
         self.assertIsNone(materials.reviewed_owner('_internal/unknown-native.so', 'Darwin', False))
 
+        for path in ('_internal/_asyncio.pyd', '_internal/pyexpat.pyd',
+                     '_internal/sqlite3.dll'):
+            self.assertEqual(materials.reviewed_owner(path, 'Windows', False),
+                             'cpython-runtime')
+
     def test_macos_openmp_requires_source_built_mapping(self):
         path = '_internal/functorch/.dylibs/libiomp5.dylib'
         self.assertEqual(materials.reviewed_owner(path, 'Darwin', True), 'llvm-openmp')
@@ -61,12 +66,17 @@ class VocalMaterialsTests(unittest.TestCase):
         self.assertNotEqual(first, materials.native_set_digest(records))
 
     def test_optional_reviewed_dependency_may_be_absent_but_not_changed(self):
-        versions = dict(materials.REVIEWED_VERSIONS)
+        versions = {name: allowed[0] for name, allowed in materials.REVIEWED_VERSIONS.items()}
         self.assertTrue(materials.reviewed_package_versions(versions))
-        versions['pyyaml'] = materials.OPTIONAL_REVIEWED_VERSIONS['pyyaml']
+        versions['pyyaml'] = materials.OPTIONAL_REVIEWED_VERSIONS['pyyaml'][0]
         self.assertTrue(materials.reviewed_package_versions(versions))
         versions['pyyaml'] = '6.0.2'
         self.assertFalse(materials.reviewed_package_versions(versions))
+
+    def test_official_windows_cpu_wheel_local_versions_are_exactly_allowed(self):
+        versions = {name: allowed[0] for name, allowed in materials.REVIEWED_VERSIONS.items()}
+        versions.update(torch='2.2.2+cpu', torchaudio='2.2.2+cpu')
+        self.assertTrue(materials.reviewed_package_versions(versions))
 
 
 if __name__ == '__main__':

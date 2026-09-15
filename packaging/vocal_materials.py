@@ -19,11 +19,12 @@ MODEL_SOURCE = 'https://zenodo.org/records/3370489'
 NATIVE_SUFFIXES = ('.so', '.dylib', '.dll', '.pyd')
 SOX_NATIVE_RE = re.compile(r'(^|[/\\])[^/\\]*sox[^/\\]*(?:\.dll|\.pyd|\.so|\.dylib)$', re.I)
 REVIEWED_VERSIONS = {
-    'torch': '2.2.2', 'torchaudio': '2.2.2', 'numpy': '1.26.4',
-    'openunmix': '1.3.0', 'pyinstaller': '6.22.0',
-    'markupsafe': '3.0.3',
+    'torch': ('2.2.2', '2.2.2+cpu'),
+    'torchaudio': ('2.2.2', '2.2.2+cpu'),
+    'numpy': ('1.26.4',), 'openunmix': ('1.3.0',),
+    'pyinstaller': ('6.22.0',), 'markupsafe': ('3.0.3',),
 }
-OPTIONAL_REVIEWED_VERSIONS = {'pyyaml': '6.0.3'}
+OPTIONAL_REVIEWED_VERSIONS = {'pyyaml': ('6.0.3',)}
 REQUIRED_NOTICE_HASHES = {
     'torch': {'a11fb738314b6617c6ede596e94f11fc9e260f50487c1c105739056c46e4ef92',
               'c2cc7bf0caec7652c2b460a8a470bea1677f241e4ab8e431df34cf17f5a9fec0'},
@@ -133,10 +134,10 @@ def requires_source_openmp(native_records, system):
 
 def reviewed_package_versions(package_versions):
     return (
-        all(package_versions.get(name) == version
-            for name, version in REVIEWED_VERSIONS.items())
-        and all(package_versions.get(name) in (None, version)
-                for name, version in OPTIONAL_REVIEWED_VERSIONS.items())
+        all(package_versions.get(name) in versions
+            for name, versions in REVIEWED_VERSIONS.items())
+        and all(package_versions.get(name) is None or package_versions.get(name) in versions
+                for name, versions in OPTIONAL_REVIEWED_VERSIONS.items())
     )
 
 
@@ -168,6 +169,9 @@ def reviewed_owner(relative_path, system, has_source_openmp):
     # than treating them as Windows system DLLs.
     if system == 'Windows' and name.startswith(('vcruntime', 'msvcp', 'vcomp')):
         return 'main-runtime'
+    if system == 'Windows' and len(parts) == 2 and (
+            name.endswith('.pyd') or name == 'sqlite3.dll'):
+        return 'cpython-runtime'
     return None
 
 
