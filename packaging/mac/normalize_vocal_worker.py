@@ -3,6 +3,32 @@ import hashlib
 from pathlib import Path
 import sys
 import subprocess
+import json
+import shutil
+
+
+def replace_openmp(worker, build_directory):
+    """Replace the generated worker runtime with our recorded LLVM build.
+
+    This is a packaging operation, not evidence of Torch ABI compatibility.
+    Native inference and separation remain mandatory after signing.
+    """
+    worker = Path(worker).resolve()
+    build = Path(build_directory).resolve()
+    recipe = json.loads((build / 'source-materials/build-recipe.json').read_text())
+    library = build / recipe['library']['relative_path']
+    if not library.resolve().is_relative_to(build):
+        raise ValueError('OpenMP library escapes build directory')
+    if hashlib.sha256(library.read_bytes()).hexdigest() != recipe['library']['sha256']:
+        raise ValueError('OpenMP build digest mismatch')
+    alias = worker / '_internal/libiomp5.dylib'
+    target = alias.resolve()
+    if not target.is_relative_to(worker) or not target.is_file():
+        raise ValueError('Unexpected generated OpenMP runtime target')
+    shutil.copyfile(library, target)
+    subprocess.run(['/usr/bin/install_name_tool', '-id', '@rpath/libiomp5.dylib', str(target)], check=True)
+    materials = worker / 'source-materials/llvm-openmp'
+    shutil.copytree(build / 'source-materials', materials)
 
 
 def prune_unused_sox(worker):
@@ -33,6 +59,26 @@ def prune_unused_sox(worker):
         if alias.is_symlink() and alias.resolve() == target:
             alias.unlink()
         path.unlink()
+    # Both core bindings use only the public libc++ ABI; use the host Apple's
+    # runtime rather than redistributing an unidentified wheel copy. This must
+    # be followed by native closure and actual separation on the target host.
+    for name in ('libtorchaudio.so', '_torchaudio.so'):
+        core = audio / 'lib' / name
+        if core.is_file():
+            subprocess.run(['/usr/bin/install_name_tool', '-change',
+                            '@rpath/libc++.1.0.dylib', '/usr/lib/libc++.1.dylib',
+                            str(core)], check=True)
+    cpp = audio / '.dylibs/libc++.1.0.dylib'
+    if cpp.is_file():
+        for binary in worker.rglob('*'):
+            if binary.is_file() and binary.suffix in ('.so', '.dylib') and binary.resolve() != cpp.resolve():
+                links = subprocess.check_output(['/usr/bin/otool', '-L', str(binary)], text=True)
+                if 'libc++.1.0.dylib' in links:
+                    raise ValueError('A retained binding still requires wheel libc++; do not prune')
+        alias = worker / '_internal/libc++.1.0.dylib'
+        if alias.is_symlink() and alias.resolve() == cpp.resolve():
+            alias.unlink()
+        cpp.unlink()
 
 
 def normalize(worker):
@@ -55,5 +101,12 @@ def normalize(worker):
 
 
 if __name__ == '__main__':
-    normalize(sys.argv[1])
-    prune_unused_sox(sys.argv[1])
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('worker')
+    parser.add_argument('--openmp-build', type=Path)
+    args = parser.parse_args()
+    normalize(args.worker)
+    prune_unused_sox(args.worker)
+    if args.openmp_build:
+        replace_openmp(args.worker, args.openmp_build)

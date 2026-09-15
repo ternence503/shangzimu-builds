@@ -9,10 +9,21 @@ import unittest
 INTERNAL = Path(__file__).resolve().parents[1] / 'Whisper_Mac_一鍵安裝版' / '_internal'
 sys.path.insert(0, str(INTERNAL))
 from subtitle_workspace import (parse_srt, serialize_srt, serialize_document,
-                                read_document, save_new_file)
+                                read_document, save_new_file, validate_cues)
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_project_normalizes_only_outer_text_whitespace(self):
+        cues = [{'start': .4, 'end': 3.2, 'text': ' Hello\n  welcome ',
+                 'words': [{'word': ' Hello', 'start': .4, 'end': 1.2}]}]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'whitespace.json'
+            save_new_file(path, serialize_document(cues))
+            restored = read_document(path)
+            self.assertEqual(restored, validate_cues(cues))
+            self.assertEqual(restored[0]['text'], 'Hello\n  welcome')
+            self.assertEqual(restored[0]['words'], cues[0]['words'])
+
     def test_multiline_utf8_srt_roundtrip(self):
         text = '\ufeff1\r\n00:00:01,200 --> 00:00:05,400\r\n王小明介紹\r\nFinal Cut Pro\r\n'
         cues = parse_srt(text)

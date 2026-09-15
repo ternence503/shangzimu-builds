@@ -16,6 +16,7 @@ parser.add_argument('--work', type=Path, required=True)
 parser.add_argument('--arch', choices=['x86_64', 'arm64'], default=platform.machine())
 parser.add_argument('--separator', type=Path, required=True)
 parser.add_argument('--separator-models', type=Path, required=True)
+parser.add_argument('--openmp-build', type=Path, help='Recorded native LLVM OpenMP build; still requires post-build inference QA')
 args = parser.parse_args()
 assert sys.platform == 'darwin', 'Build on macOS'
 assert args.arch == platform.machine(), 'Use the target architecture native Python and dependencies'
@@ -33,9 +34,11 @@ subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
     str(Path(__file__).with_name('app.spec'))], env=env, check=True)
 app = args.dist / '上字幕.app'
 shutil.copytree(args.separator, app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals', symlinks=True)
-from normalize_vocal_worker import normalize, prune_unused_sox
+from normalize_vocal_worker import normalize, prune_unused_sox, replace_openmp
 normalize(app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals')
 prune_unused_sox(app / 'Contents' / 'Resources' / 'resources' / 'workers' / 'vocals')
+if args.openmp_build:
+    replace_openmp(app / 'Contents/Resources/resources/workers/vocals', args.openmp_build)
 # PyInstaller may mirror binary/data resource folders independently. Expose the
 # post-copied worker to the runtime's Frameworks/resources view as well.
 worker_view = app / 'Contents/Frameworks/resources/workers'

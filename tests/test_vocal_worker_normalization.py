@@ -2,12 +2,14 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import sys
 
 spec = importlib.util.spec_from_file_location('normalization', Path(__file__).resolve().parents[1] / 'packaging/mac/normalize_vocal_worker.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+@unittest.skipUnless(sys.platform == 'darwin', 'Mach-O packaging and POSIX loader symlinks are macOS-only')
 class NormalizationTests(unittest.TestCase):
     def fixture(self, root, payload=b'same'):
         duplicate = root / '_internal/torch/lib/libiomp5.dylib'

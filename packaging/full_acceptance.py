@@ -79,9 +79,14 @@ def run(base, report, cloud=False):
                     subtitle = Path(directory) / 'synthetic-subtitle.srt'
                     with patch.object(gui.filedialog, 'asksaveasfilename', return_value=str(project)):
                         assert app.save_layout_project()
-                    from subtitle_workspace import read_document
+                    from subtitle_workspace import read_document, validate_cues
                     restored, metadata = read_document(project, with_metadata=True)
-                    assert restored == app.layout_result
+                    # Documents intentionally trim outer whitespace. Compare
+                    # against the same public validation contract, preserving
+                    # all timing/word fields and meaningful internal newlines.
+                    assert restored == validate_cues(app.layout_result), (restored, app.layout_result)
+                    assert metadata['original_segments'] == validate_cues(app.layout_source)
+                    assert metadata['settings'] == app._layout_settings()
                     with patch.object(gui.filedialog, 'asksaveasfilename', return_value=str(subtitle)):
                         app.export_layout_srt()
                     assert subtitle.stat().st_size > 0
