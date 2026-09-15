@@ -31,6 +31,11 @@ class VocalMaterialsTests(unittest.TestCase):
         self.assertEqual(materials.reviewed_owner(path, 'Darwin', False), 'torch')
         self.assertEqual(materials.reviewed_owner('_internal/libomp.dylib', 'Darwin', True), 'llvm-openmp')
 
+    def test_apple_silicon_without_openmp_needs_no_synthetic_runtime(self):
+        paths = ['VocalWorker', '_internal/torch/lib/libtorch_cpu.dylib']
+        self.assertFalse(any('iomp' in Path(path).name.lower() or Path(path).name.lower() == 'libomp.dylib'
+                             for path in paths))
+
     def test_native_sox_names_are_denied(self):
         for path in ('_internal/libsox.dll', '_internal/torchaudio/lib/_torchaudio_sox.pyd',
                      '_internal/torchaudio/lib/libtorchaudio_sox.so'):

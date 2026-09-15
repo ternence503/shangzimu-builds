@@ -265,7 +265,10 @@ def collect(worker, output, models, distributions=None, main_materials=None):
             item['symlink_resolved_relative_path'] = path.resolve().relative_to(worker).as_posix()
         natives.append(item)
     review_ok = core_ok and hashes_ok and keyword_ok and main_reviewed and not unresolved
-    if platform.system() == 'Darwin' and not has_source_openmp:
+    retained_openmp = any(('iomp' in PurePosixPath(item['path']).name.lower()
+                           or PurePosixPath(item['path']).name.lower() == 'libomp.dylib')
+                          for item in natives)
+    if platform.system() == 'Darwin' and retained_openmp and not has_source_openmp:
         review_ok = False
         unresolved.append('source-materials/llvm-openmp')
     pending = [] if review_ok else [

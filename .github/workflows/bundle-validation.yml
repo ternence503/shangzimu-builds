@@ -60,8 +60,12 @@ jobs:
           "$RUNNER_TEMP/vocal-env/bin/python" -m pip install -r packaging/requirements-vocal-worker.txt
           python packaging/prepare_vocal_model.py "$RUNNER_TEMP/vocal-model"
           PYINSTALLER_CONFIG_DIR="$RUNNER_TEMP/vocal-cache" "$RUNNER_TEMP/vocal-env/bin/python" -m PyInstaller --noconfirm --distpath "$RUNNER_TEMP/vocal-dist" --workpath "$RUNNER_TEMP/vocal-freeze" packaging/vocal_worker.spec
-          python packaging/build_local_openmp.py --output "$RUNNER_TEMP/local-openmp"
-          python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}' --separator "$RUNNER_TEMP/vocal-dist/vocals" --separator-models "$RUNNER_TEMP/vocal-model" --openmp-build "$RUNNER_TEMP/local-openmp"
+          if [[ '${{ matrix.arch }}' == 'x86_64' ]]; then
+            python packaging/build_local_openmp.py --output "$RUNNER_TEMP/local-openmp"
+            python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}' --separator "$RUNNER_TEMP/vocal-dist/vocals" --separator-models "$RUNNER_TEMP/vocal-model" --openmp-build "$RUNNER_TEMP/local-openmp"
+          else
+            python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}' --separator "$RUNNER_TEMP/vocal-dist/vocals" --separator-models "$RUNNER_TEMP/vocal-model"
+          fi
       - name: Native dependency closure review
         run: |
           say -o "$RUNNER_TEMP/worker-speech.aiff" 'This synthetic speech tests the local vocal separation worker.'
