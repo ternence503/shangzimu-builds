@@ -123,6 +123,13 @@ def canonical_name(value):
     return re.sub(r'[-_.]+', '-', str(value)).lower()
 
 
+def requires_source_openmp(native_records, system):
+    """Whether this bundle claims an independently supplied OpenMP runtime."""
+    return system == 'Darwin' and any(
+        item.get('owner') == 'llvm-openmp' for item in native_records
+    )
+
+
 def reviewed_owner(relative_path, system, has_source_openmp):
     path, name = PurePosixPath(relative_path), PurePosixPath(relative_path).name.lower()
     parts = tuple(part.lower() for part in path.parts)
@@ -245,7 +252,17 @@ def collect(worker, output, models, distributions=None, main_materials=None):
         relative_path = path.relative_to(worker).as_posix()
         if SOX_NATIVE_RE.search(relative_path):
             raise ValueError('Native SoX payload is forbidden from the public VocalWorker')
-        owner = reviewed_owner(relative_path, platform.system(), has_source_openmp)
+        # PyInstaller creates top-level compatibility symlinks for libraries
+        # that are owned by a package below ``_internal``.  Review the actual
+        # in-bundle target so the link inherits the same source/license owner.
+        resolved_relative_path = None
+        if path.is_symlink():
+            resolved_relative_path = path.resolve().relative_to(worker).as_posix()
+        owner = reviewed_owner(
+            resolved_relative_path or relative_path,
+            platform.system(),
+            has_source_openmp,
+        )
         license_paths = []
         if owner in notice_by_package:
             license_paths = [entry['path'] for entry in notice_by_package[owner]]
@@ -261,14 +278,11 @@ def collect(worker, output, models, distributions=None, main_materials=None):
             item.update(owner=owner, source_url=SOURCE_URLS[owner], license_paths=license_paths)
         else:
             unresolved.append(relative_path)
-        if path.is_symlink():
-            item['symlink_resolved_relative_path'] = path.resolve().relative_to(worker).as_posix()
+        if resolved_relative_path:
+            item['symlink_resolved_relative_path'] = resolved_relative_path
         natives.append(item)
     review_ok = core_ok and hashes_ok and keyword_ok and main_reviewed and not unresolved
-    retained_openmp = any(('iomp' in PurePosixPath(item['path']).name.lower()
-                           or PurePosixPath(item['path']).name.lower() == 'libomp.dylib')
-                          for item in natives)
-    if platform.system() == 'Darwin' and retained_openmp and not has_source_openmp:
+    if requires_source_openmp(natives, platform.system()) and not has_source_openmp:
         review_ok = False
         unresolved.append('source-materials/llvm-openmp')
     pending = [] if review_ok else [

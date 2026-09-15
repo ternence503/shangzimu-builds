@@ -40,6 +40,10 @@ def _runtime_roots(bundle, images):
 def _owning_runtime(image, runtime_roots):
     return next(root for root in runtime_roots if image.is_relative_to(root))
 
+def _bundle_path(bundle, path):
+    """Stable report path independent of the runner's native separator."""
+    return Path(path).relative_to(bundle).as_posix()
+
 def audit_graph(bundle, images, dll_directories=()):
     bundle = Path(bundle).resolve()
     images = {Path(p).resolve(): data for p, data in images.items()}
@@ -55,14 +59,14 @@ def audit_graph(bundle, images, dll_directories=()):
             raise ValueError('DLL directory must exist inside bundle')
         runtime = _owning_runtime(directory, runtime_roots)
         declared_by_runtime[runtime].append(directory)
-        declared.append(str(relative))
+        declared.append(relative.as_posix())
     errors, resolutions = [], []
     for image, data in sorted(images.items()):
         if not image.is_relative_to(bundle):
             errors.append({'reason':'PE image escapes bundle'})
             continue
         if data['machine'] != 0x8664:
-            errors.append({'image':str(image.relative_to(bundle)), 'reason':'non-x64 PE image'})
+            errors.append({'image':_bundle_path(bundle, image), 'reason':'non-x64 PE image'})
         # Parent is the direct DLL loader directory. Additional directories
         # represent explicit PyInstaller runtime hooks scoped to this process.
         # Never borrow DLLs from a separate nested PyInstaller executable.
@@ -72,7 +76,7 @@ def audit_graph(bundle, images, dll_directories=()):
         ))
         for name in data['imports']:
             if not re.fullmatch(r'[A-Za-z0-9_.+-]+', name):
-                errors.append({'image':str(image.relative_to(bundle)), 'dependency':name, 'reason':'invalid import name'})
+                errors.append({'image':_bundle_path(bundle, image), 'dependency':name, 'reason':'invalid import name'})
                 continue
             if system_import(name):
                 continue
@@ -85,17 +89,17 @@ def audit_graph(bundle, images, dll_directories=()):
                         candidates.append(path.resolve())
             candidates = list(dict.fromkeys(candidates))
             if not candidates:
-                errors.append({'image':str(image.relative_to(bundle)), 'dependency':name,
+                errors.append({'image':_bundle_path(bundle, image), 'dependency':name,
                                'reason':'non-OS dependency not bundled in declared loader directories'})
             elif any(not p.is_relative_to(bundle) or p not in images for p in candidates):
-                errors.append({'image':str(image.relative_to(bundle)), 'dependency':name,
+                errors.append({'image':_bundle_path(bundle, image), 'dependency':name,
                                'reason':'external or unaudited candidate'})
             elif len(candidates) != 1:
-                errors.append({'image':str(image.relative_to(bundle)), 'dependency':name,
+                errors.append({'image':_bundle_path(bundle, image), 'dependency':name,
                                'reason':'ambiguous DLL directory search order'})
             else:
-                resolutions.append({'image':str(image.relative_to(bundle)), 'dependency':name,
-                                    'resolved':str(candidates[0].relative_to(bundle))})
+                resolutions.append({'image':_bundle_path(bundle, image), 'dependency':name,
+                                    'resolved':_bundle_path(bundle, candidates[0])})
     return {'status':'passed' if images and not errors else 'needs-review',
             'pe_count':len(images), 'errors':errors, 'resolutions':resolutions,
             'declared_dll_directories':declared,
