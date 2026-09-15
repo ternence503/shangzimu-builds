@@ -29,7 +29,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       MACOSX_DEPLOYMENT_TARGET: '14.0'
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -60,17 +60,26 @@ jobs:
           "$RUNNER_TEMP/vocal-env/bin/python" -m pip install -r packaging/requirements-vocal-worker.txt
           python packaging/prepare_vocal_model.py "$RUNNER_TEMP/vocal-model"
           PYINSTALLER_CONFIG_DIR="$RUNNER_TEMP/vocal-cache" "$RUNNER_TEMP/vocal-env/bin/python" -m PyInstaller --noconfirm --distpath "$RUNNER_TEMP/vocal-dist" --workpath "$RUNNER_TEMP/vocal-freeze" packaging/vocal_worker.spec
-          python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}' --separator "$RUNNER_TEMP/vocal-dist/vocals" --separator-models "$RUNNER_TEMP/vocal-model"
+          python packaging/build_local_openmp.py --output "$RUNNER_TEMP/local-openmp"
+          python packaging/mac/build.py --model "$RUNNER_TEMP/resources/models/faster-small" --tools "$RUNNER_TEMP/resources/bin" --dist "$RUNNER_TEMP/dist" --work "$RUNNER_TEMP/freeze" --arch '${{ matrix.arch }}' --separator "$RUNNER_TEMP/vocal-dist/vocals" --separator-models "$RUNNER_TEMP/vocal-model" --openmp-build "$RUNNER_TEMP/local-openmp"
       - name: Native dependency closure review
         run: |
           say -o "$RUNNER_TEMP/worker-speech.aiff" 'This synthetic speech tests the local vocal separation worker.'
           "$RUNNER_TEMP/dist/上字幕.app/Contents/Resources/resources/workers/vocals/VocalWorker" --input "$RUNNER_TEMP/worker-speech.aiff" --output "$RUNNER_TEMP/worker-vocals.wav" --models "$RUNNER_TEMP/vocal-model" --ffmpeg "$RUNNER_TEMP/resources/bin/ffmpeg"
           test -s "$RUNNER_TEMP/worker-vocals.wav"
           python packaging/mac/check_dependencies.py "$RUNNER_TEMP/dist/上字幕.app" --pyinstaller --vocal-worker
+      - name: Collect exact VocalWorker source and license mapping
+        run: |
+          "$RUNNER_TEMP/vocal-env/bin/python" packaging/vocal_materials.py --worker "$RUNNER_TEMP/dist/上字幕.app/Contents/Resources/resources/workers/vocals" --output "$RUNNER_TEMP/vocal-materials" --models "$RUNNER_TEMP/vocal-model" --main-materials "$RUNNER_TEMP/resources"
+          python -c 'import json,os; r=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"vocal-materials","vocal-materials-manifest.json"))); assert r["status"]=="reviewed-for-public-test" and r["scope"]=="final-frozen-vocal-worker" and r["native_files"]'
       - name: Generate non-private local speech fixture
         run: |
           say -o "$RUNNER_TEMP/speech.aiff" 'Hello. Welcome to the subtitle tool. This recording is generated locally to test offline speech recognition.'
           test -s "$RUNNER_TEMP/speech.aiff"
+      - name: Full feature contract and local workflow acceptance
+        run: |
+          SHANGZIMU_ACCEPTANCE_MODELS=small WHISPER_PREVIEW_DATA_DIR="$RUNNER_TEMP/full-user-data" SHANGZIMU_TEST_SPEECH="$RUNNER_TEMP/speech.aiff" "$RUNNER_TEMP/dist/上字幕.app/Contents/MacOS/ShangZiMu" --full-self-test "$RUNNER_TEMP/full-acceptance.json"
+          python -c 'import json,os; r=json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"full-acceptance.json"))); assert r["status"]=="passed" and r["all_tabs_enabled"] and r["lyrics_outputs"] and r["subtitle_project_roundtrip_and_srt"] and r["cloud_refusal_without_output"] and set(r["model_options_present"])=={"base","small","medium","large","turbo"}'
       - name: Relocated offline recognition and signature validation
         run: python packaging/mac/relocation_test.py "$RUNNER_TEMP/dist/上字幕.app" "$RUNNER_TEMP/speech.aiff" "$RUNNER_TEMP/probe.json"
       - name: Require actual speech recognition evidence
@@ -97,11 +106,12 @@ jobs:
             ${{ runner.temp }}/resources/THIRD-PARTY-NOTICES.txt
             ${{ runner.temp }}/resources/licenses/
             ${{ runner.temp }}/resources/source-materials/
+            ${{ runner.temp }}/vocal-materials/
           retention-days: 7
           compression-level: 6
           if-no-files-found: warn
       - name: Stage reviewed public test installer and evidence
-        run: python packaging/private_delivery.py --platform 'mac-${{ matrix.arch }}' --installer "$RUNNER_TEMP/internal.pkg" --resources "$RUNNER_TEMP/resources" --lock "$RUNNER_TEMP/dependency-lock.txt" --report "$RUNNER_TEMP/probe.json" --report "$RUNNER_TEMP/installed-probe.json" --output "$RUNNER_TEMP/private-delivery"
+        run: python packaging/private_delivery.py --platform 'mac-${{ matrix.arch }}' --installer "$RUNNER_TEMP/internal.pkg" --resources "$RUNNER_TEMP/resources" --lock "$RUNNER_TEMP/dependency-lock.txt" --report "$RUNNER_TEMP/probe.json" --report "$RUNNER_TEMP/installed-probe.json" --report "$RUNNER_TEMP/full-acceptance.json" --vocal-materials "$RUNNER_TEMP/vocal-materials" --output "$RUNNER_TEMP/private-delivery"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: public-test-unnotarized-mac-${{ matrix.arch }}-${{ github.run_id }}
@@ -113,7 +123,7 @@ jobs:
   windows:
     if: github.event_name == 'workflow_dispatch' && github.repository == 'ternence503/shangzimu-builds' && github.event.repository.private == false
     runs-on: windows-2022
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -203,15 +213,40 @@ jobs:
         run: |
           $bundle = "$env:RUNNER_TEMP\native-build\dist\上字幕"
           $auditArguments = @('packaging/windows/check_dependencies.py', $bundle)
-          # NumPy and PyAV wheel loaders use these exact package DLL directories.
+          # NumPy, PyAV and PyTorch loaders use these exact package DLL directories.
           # Never search all bundle subdirectories or borrow the runner's MSVC runtime.
-          foreach ($relative in @('_internal/numpy.libs', '_internal/av.libs')) {
+          foreach ($relative in @(
+            '_internal/numpy.libs',
+            '_internal/av.libs',
+            '_internal/resources/workers/vocals/_internal/numpy.libs',
+            '_internal/resources/workers/vocals/_internal/torch/lib'
+          )) {
             if (Test-Path -LiteralPath (Join-Path $bundle $relative) -PathType Container) {
               $auditArguments += @('--dll-directory', $relative)
             }
           }
           python @auditArguments
           if ($LASTEXITCODE -ne 0) { throw 'Windows native dependency audit failed' }
+      - name: Collect exact VocalWorker source and license mapping
+        shell: pwsh
+        run: |
+          $vocalPython = "$env:RUNNER_TEMP\vocal-env\Scripts\python.exe"
+          & $vocalPython packaging/vocal_materials.py --worker "$env:RUNNER_TEMP\native-build\dist\上字幕\_internal\resources\workers\vocals" --output "$env:RUNNER_TEMP\vocal-materials" --models "$env:RUNNER_TEMP\vocal-model" --main-materials "$env:RUNNER_TEMP\resources"
+          if ($LASTEXITCODE -ne 0) { throw 'VocalWorker source/license collection failed' }
+          $review = Get-Content "$env:RUNNER_TEMP\vocal-materials\vocal-materials-manifest.json" -Raw | ConvertFrom-Json
+          if ($review.status -ne 'reviewed-for-public-test' -or $review.scope -ne 'final-frozen-vocal-worker' -or $review.native_files.Count -eq 0) { throw 'VocalWorker public-test review incomplete' }
+      - name: Full feature contract and local workflow acceptance
+        shell: pwsh
+        run: |
+          $bundle = "$env:RUNNER_TEMP\native-build\dist\上字幕"
+          $env:SHANGZIMU_ACCEPTANCE_MODELS = 'small'
+          $env:WHISPER_PREVIEW_DATA_DIR = "$env:RUNNER_TEMP\full-user-data"
+          $env:SHANGZIMU_TEST_SPEECH = "$env:RUNNER_TEMP\speech.wav"
+          $reportPath = "$env:RUNNER_TEMP\full-acceptance.json"
+          $process = Start-Process -FilePath (Join-Path $bundle '上字幕.exe') -ArgumentList @('--full-self-test', ('"' + $reportPath + '"')) -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $reportPath)) { throw 'Full feature acceptance failed' }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+          if ($report.status -ne 'passed' -or -not $report.all_tabs_enabled -or -not $report.lyrics_outputs -or -not $report.subtitle_project_roundtrip_and_srt -or -not $report.cloud_refusal_without_output -or $report.model_options_present.Count -ne 5) { throw 'Full feature evidence incomplete' }
       - name: Relocate and execute complete Windows app
         shell: pwsh
         run: ./packaging/windows/relocation_test.ps1 -BundleDir "$env:RUNNER_TEMP\native-build\dist\上字幕" -SpeechFile "$env:RUNNER_TEMP\speech.wav" -ReportFile "$env:RUNNER_TEMP\windows-relocation.json" -EnableFirewallProfilesForDisposableCI
@@ -280,6 +315,7 @@ jobs:
             ${{ runner.temp }}/resources/THIRD-PARTY-NOTICES.txt
             ${{ runner.temp }}/resources/licenses/
             ${{ runner.temp }}/resources/source-materials/
+            ${{ runner.temp }}/vocal-materials/
           retention-days: 7
           compression-level: 6
           if-no-files-found: warn
@@ -288,7 +324,7 @@ jobs:
         run: |
           $installers = @(Get-ChildItem "$env:RUNNER_TEMP\native-build\release" -Filter '*.exe')
           if ($installers.Count -ne 1) { throw 'Exactly one installer required for staging' }
-          python packaging/private_delivery.py --platform windows-x64 --installer $installers[0].FullName --resources "$env:RUNNER_TEMP\resources" --lock "$env:RUNNER_TEMP\native-build\dependency-lock.txt" --report "$env:RUNNER_TEMP\native-build\frozen-self-test.json" --report "$env:RUNNER_TEMP\windows-relocation.json" --report "$env:RUNNER_TEMP\installed-probe.json" --output "$env:RUNNER_TEMP\private-delivery"
+          python packaging/private_delivery.py --platform windows-x64 --installer $installers[0].FullName --resources "$env:RUNNER_TEMP\resources" --lock "$env:RUNNER_TEMP\native-build\dependency-lock.txt" --report "$env:RUNNER_TEMP\native-build\frozen-self-test.json" --report "$env:RUNNER_TEMP\windows-relocation.json" --report "$env:RUNNER_TEMP\installed-probe.json" --report "$env:RUNNER_TEMP\full-acceptance.json" --vocal-materials "$env:RUNNER_TEMP\vocal-materials" --output "$env:RUNNER_TEMP\private-delivery"
           if ($LASTEXITCODE -ne 0) { throw 'Reviewed public installer evidence staging failed' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

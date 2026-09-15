@@ -1,4 +1,4 @@
-"""Build only LLVM 18.1.8 OpenMP for Intel macOS; never change an installed app."""
+"""Build only LLVM 18.1.8 OpenMP for the native macOS architecture."""
 import argparse
 import ctypes
 import hashlib
@@ -46,8 +46,9 @@ def unpack(archive, destination):
 
 
 def build(output, source_cache=None):
-    if platform.system() != 'Darwin' or platform.machine() != 'x86_64':
-        raise RuntimeError('This build target requires Intel macOS')
+    architecture = platform.machine()
+    if platform.system() != 'Darwin' or architecture not in ('x86_64', 'arm64'):
+        raise RuntimeError('This build target requires native Intel or Apple Silicon macOS')
     output = Path(output).absolute()
     if output.exists() or output.is_symlink():
         raise FileExistsError('Fresh output directory required')
@@ -89,7 +90,7 @@ def build(output, source_cache=None):
         raise ValueError('Expected Apache license with LLVM exceptions')
     shutil.copyfile(license_file, materials / 'LLVM-OpenMP-LICENSE.TXT')
     build_dir, install_dir = output / 'build', output / 'install'
-    flags = ['-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_OSX_ARCHITECTURES=x86_64',
+    flags = ['-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_OSX_ARCHITECTURES=' + architecture,
              '-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0', '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
              '-DLIBOMP_ENABLE_SHARED=ON', '-DOPENMP_ENABLE_LIBOMPTARGET=OFF',
              '-DOPENMP_ENABLE_OMPT_TOOLS=OFF', '-DLIBOMP_OMPT_SUPPORT=OFF',
@@ -110,7 +111,7 @@ def build(output, source_cache=None):
     if max_threads < 1 or not fork_available:
         raise RuntimeError('OpenMP runtime symbol smoke check failed')
     recipe = {'schema': 1, 'status': 'source-built/runtime-symbol-smoke-tested/not-Torch-ABI-verified',
-              'target': 'macOS-x86_64', 'deployment_target': '14.0', 'version': VERSION,
+              'target': 'macOS-' + architecture, 'deployment_target': '14.0', 'version': VERSION,
               'sources': records, 'cmake_flags': flags,
               'commands': ['cmake -S openmp -B build -G Unix Makefiles -DCMAKE_INSTALL_PREFIX=install [cmake_flags]',
                            'cmake --build build --parallel 4', 'cmake --install build'],

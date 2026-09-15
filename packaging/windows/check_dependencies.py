@@ -23,10 +23,28 @@ def system_import(name):
     return lower.endswith('.dll') and (lower[:-4] in SYSTEM_DLLS or
         lower.startswith(('api-ms-win-', 'ext-ms-win-')))
 
+def _runtime_roots(bundle, images):
+    """Return isolated PyInstaller onedir roots, deepest first.
+
+    A bundled helper such as VocalWorker.exe is a separate process with its own
+    sibling ``_internal`` directory.  Windows never searches the parent app's
+    ``_internal`` merely because the helper is stored inside that app, so the
+    audit must not merge candidates from the two runtimes.
+    """
+    roots = {bundle}
+    for image in images:
+        if image.suffix.lower() == '.exe' and (image.parent / '_internal').is_dir():
+            roots.add(image.parent)
+    return sorted(roots, key=lambda path: len(path.parts), reverse=True)
+
+def _owning_runtime(image, runtime_roots):
+    return next(root for root in runtime_roots if image.is_relative_to(root))
+
 def audit_graph(bundle, images, dll_directories=()):
     bundle = Path(bundle).resolve()
     images = {Path(p).resolve(): data for p, data in images.items()}
-    roots = [bundle, bundle / '_internal']
+    runtime_roots = _runtime_roots(bundle, images)
+    declared_by_runtime = {root: [] for root in runtime_roots}
     declared = []
     for relative in dll_directories:
         relative = Path(relative)
@@ -35,7 +53,9 @@ def audit_graph(bundle, images, dll_directories=()):
         directory = (bundle / relative).resolve()
         if not directory.is_relative_to(bundle) or not directory.is_dir():
             raise ValueError('DLL directory must exist inside bundle')
-        roots.append(directory); declared.append(str(relative))
+        runtime = _owning_runtime(directory, runtime_roots)
+        declared_by_runtime[runtime].append(directory)
+        declared.append(str(relative))
     errors, resolutions = [], []
     for image, data in sorted(images.items()):
         if not image.is_relative_to(bundle):
@@ -44,8 +64,12 @@ def audit_graph(bundle, images, dll_directories=()):
         if data['machine'] != 0x8664:
             errors.append({'image':str(image.relative_to(bundle)), 'reason':'non-x64 PE image'})
         # Parent is the direct DLL loader directory. Additional directories
-        # represent explicit PyInstaller runtime hooks, not a global basename search.
-        directories = list(dict.fromkeys([image.parent] + roots))
+        # represent explicit PyInstaller runtime hooks scoped to this process.
+        # Never borrow DLLs from a separate nested PyInstaller executable.
+        runtime = _owning_runtime(image, runtime_roots)
+        directories = list(dict.fromkeys(
+            [image.parent, runtime, runtime / '_internal'] + declared_by_runtime[runtime]
+        ))
         for name in data['imports']:
             if not re.fullmatch(r'[A-Za-z0-9_.+-]+', name):
                 errors.append({'image':str(image.relative_to(bundle)), 'dependency':name, 'reason':'invalid import name'})
@@ -75,8 +99,10 @@ def audit_graph(bundle, images, dll_directories=()):
     return {'status':'passed' if images and not errors else 'needs-review',
             'pe_count':len(images), 'errors':errors, 'resolutions':resolutions,
             'declared_dll_directories':declared,
+            'runtime_roots':[str(path.relative_to(bundle)) if path != bundle else '.' for path in runtime_roots],
             'limitations':'Static imports and delay imports only. OS core/API-set names assumed available on supported Windows. '
-                          'DLL directories are caller-declared runtime hooks; duplicate search order is rejected. '
+                          'Nested PyInstaller process roots are isolated. DLL directories are caller-declared runtime hooks '
+                          'scoped to their owning process; duplicate search order is rejected. '
                           'Does not prove arbitrary LoadLibrary, driver availability or fresh-OS execution. '
                           'MSVC redistributables are not treated as built-in OS libraries.'}
 

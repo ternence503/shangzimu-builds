@@ -31,18 +31,58 @@ class PrivateDeliveryTests(unittest.TestCase):
             'inventory_sha256':delivery.sha256(self.resources / 'components.json'),
             'files':[{'path':n, 'sha256':delivery.sha256(self.resources / n)} for n in
                      ['THIRD-PARTY-NOTICES.txt', 'licenses/LICENSE']]}))
+        self.vocal_materials = self.root / 'vocal-materials'
+        for relative, text in {
+            'licenses/UMX-HQ-MIT-LICENSE.txt': 'Synthetic UMX-HQ MIT license',
+            'licenses/python-packages/torch-2.2.2/LICENSE': 'Synthetic Torch license',
+            'licenses/python-packages/torchaudio-2.2.2/LICENSE': 'Synthetic TorchAudio license',
+            'licenses/python-packages/numpy-1.26.4/LICENSE.txt': 'Synthetic NumPy license',
+        }.items():
+            path = self.vocal_materials / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        material_files = [path for path in sorted(self.vocal_materials.rglob('*')) if path.is_file()]
+        native_files = [{
+            'path': 'VocalWorker', 'sha256': '1' * 64,
+            'status': 'reviewed-for-public-test', 'owner': 'PyInstaller-bootloader',
+            'source_url': 'https://github.com/pyinstaller/pyinstaller/tree/v6.22.0',
+            'license_paths': ['licenses/python-packages/torch-2.2.2/LICENSE'],
+        }]
+        canonical = json.dumps(
+            [{'path': item['path'], 'sha256': item['sha256']} for item in native_files],
+            ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+        ).encode('utf-8')
+        (self.vocal_materials / 'vocal-materials-manifest.json').write_text(json.dumps({
+            'schema': 1, 'status': 'reviewed-for-public-test',
+            'scope': 'final-frozen-vocal-worker',
+            'worker_native_sha256': __import__('hashlib').sha256(canonical).hexdigest(),
+            'model': {'checkpoint': 'vocals-b62c91ce.pth',
+                      'checkpoint_sha256': 'b62c91cedbc7a066f1778ead5b5cecb377aa3a46a31af1cce7c5c8769339d083',
+                      'license_id': 'mit-license'},
+            'native_files': native_files,
+            'materials': [{'path': path.relative_to(self.vocal_materials).as_posix(),
+                           'sha256': delivery.sha256(path)} for path in material_files],
+        }))
         self.reports = [self.root / name for name in ('probe.json', 'installed-probe.json')]
         for report in self.reports:
             self.write_report(report, {'status':'passed', 'returncode':0,
                 'speech_transcribed_and_srt_exported':True, 'os_network_denied':True,
                 'adhoc_signature_verified':True, 'in_place_execution':report.name == 'installed-probe.json',
                 'resources':'/private/user/path', 'stderr':'secret raw text', 'synthetic_speech_text':'not retained'})
+        full = self.root / 'full-acceptance.json'
+        self.write_report(full, {'status': 'passed', 'all_tabs_enabled': True,
+            'lyrics_outputs': {'.txt': 10, '.lrc': 11, '.srt': 12},
+            'subtitle_project_roundtrip_and_srt': True,
+            'cloud_refusal_without_output': True, 'headless_dialogs': 0,
+            'models': {'small': 'private transcript'}, 'resources': '/private/user/path'})
+        self.reports.append(full)
 
     def write_report(self, path, data):
         path.write_text(json.dumps(data), encoding='utf-8')
 
     def stage(self, platform='mac-x86_64'):
-        return delivery.stage(platform, self.installer, self.resources, self.lock, self.reports, self.output, self.env)
+        return delivery.stage(platform, self.installer, self.resources, self.lock,
+                              self.reports, self.output, self.vocal_materials, self.env)
 
     def test_exact_installer_hash_and_sanitized_roles(self):
         manifest = self.stage()
@@ -52,11 +92,18 @@ class PrivateDeliveryTests(unittest.TestCase):
         self.assertNotIn('/private/user', saved)
         self.assertNotIn('secret raw text', saved)
         self.assertNotIn('not retained', saved)
-        self.assertEqual({r['role'] for r in json.loads(saved)}, {'relocated', 'installed'})
+        self.assertEqual({r['role'] for r in json.loads(saved)}, {'relocated', 'installed', 'full'})
+        full = next(r for r in json.loads(saved) if r['role'] == 'full')
+        self.assertTrue(full['lyrics_txt_lrc_srt'])
+        self.assertNotIn('private transcript', saved)
         self.assertEqual(set(p.name for p in self.output.iterdir()),
                          {installer_name, 'components.json', 'actual-build-dependency-lock.txt',
                           'acceptance-evidence.json', 'source-and-checksums.json',
-                          'reviewed-materials-manifest.json', 'source-and-license-materials.zip'})
+                          'reviewed-materials-manifest.json', 'vocal-materials-manifest.json',
+                          'source-and-license-materials.zip'})
+        with __import__('zipfile').ZipFile(self.output / 'source-and-license-materials.zip') as archive:
+            self.assertIn('vocal-worker/vocal-materials-manifest.json', archive.namelist())
+            self.assertIn('vocal-worker/licenses/UMX-HQ-MIT-LICENSE.txt', archive.namelist())
 
     def test_unreviewed_or_changed_materials_prevent_installer_upload(self):
         original = self.materials.read_text()
@@ -66,6 +113,25 @@ class PrivateDeliveryTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.stage()
         self.materials.write_text(original)
         (self.resources / 'licenses/LICENSE').write_text('changed')
+        with self.assertRaises(ValueError): self.stage()
+        self.assertFalse(self.output.exists())
+
+    def test_unreviewed_or_incomplete_vocal_materials_prevent_installer_upload(self):
+        manifest = self.vocal_materials / 'vocal-materials-manifest.json'
+        original = manifest.read_text()
+        data = json.loads(original)
+        data['status'] = 'collected-not-reviewed/not-redistribution-cleared'
+        manifest.write_text(json.dumps(data))
+        with self.assertRaises(ValueError): self.stage()
+        manifest.write_text(original)
+        data = json.loads(original)
+        data['native_files'][0].pop('source_url')
+        manifest.write_text(json.dumps(data))
+        with self.assertRaises(ValueError): self.stage()
+        manifest.write_text(original)
+        data = json.loads(original)
+        data['native_files'][0]['path'] = '_internal/libsox.dll'
+        manifest.write_text(json.dumps(data))
         with self.assertRaises(ValueError): self.stage()
         self.assertFalse(self.output.exists())
 
@@ -86,6 +152,9 @@ class PrivateDeliveryTests(unittest.TestCase):
         self.assertEqual(workflow.count('name: public-test-'), 2)
         self.assertIn('Require actual speech recognition evidence', workflow)
         self.assertIn('EnableFirewallProfilesForDisposableCI', workflow)
+        self.assertEqual(workflow.count('--vocal-materials'), 2)
+        self.assertEqual(workflow.count('--report "$RUNNER_TEMP/full-acceptance.json"'), 1)
+        self.assertEqual(workflow.count('--report "$env:RUNNER_TEMP\\full-acceptance.json"'), 1)
 
     def test_private_repo_and_commit_guards(self):
         for key, wrong in [('GITHUB_REPOSITORY','ternence503/whisper-gui'), ('SHANGZIMU_PRIVATE_REPOSITORY','true'), ('GITHUB_EVENT_NAME','push'), ('GITHUB_SHA','main')]:
@@ -118,6 +187,7 @@ class PrivateDeliveryTests(unittest.TestCase):
     def test_windows_native_firewall_controls_and_roles(self):
         self.installer = self.root / 'internal.exe'
         self.installer.write_bytes(b'synthetic Windows installer fixture')
+        full = self.reports[-1]
         self.reports = [self.root / name for name in ('frozen-self-test.json', 'windows-relocation.json', 'installed-probe.json')]
         simple = {'status':'passed', 'speech_transcribed_and_srt_exported':True}
         for report in self.reports: self.write_report(report, simple)
@@ -125,6 +195,7 @@ class PrivateDeliveryTests(unittest.TestCase):
             network_baseline={'connected':True, 'python_socket_patch_applied':False, 'endpoint':'not retained'},
             network_with_block={'connected':False, 'python_socket_patch_applied':False})
         self.write_report(self.reports[1], relocated)
+        self.reports.append(full)
         relocated['network_denial_proven'] = False
         self.write_report(self.reports[1], relocated)
         with self.assertRaises(ValueError): self.stage('windows-x64')

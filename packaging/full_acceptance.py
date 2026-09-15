@@ -51,13 +51,18 @@ def run(base, report, cloud=False):
             with patch.object(socket.socket, 'connect', forbidden), patch.object(socket, 'create_connection', forbidden):
                 audio = os.environ['SHANGZIMU_TEST_SPEECH']
                 results = {}
-                for name in gui.MODEL_OPTIONS:
+                requested_models = [name.strip() for name in
+                                    os.environ.get('SHANGZIMU_ACCEPTANCE_MODELS', ','.join(gui.MODEL_OPTIONS)).split(',')
+                                    if name.strip()]
+                assert requested_models and set(requested_models) <= set(gui.MODEL_OPTIONS)
+                for name in requested_models:
                     result = app._transcribe(audio, name, dict(gui.DEFAULT_OPTIONS, language='en', word_timestamps=True), threading.Event())
                     assert result.get('text', '').strip(), name
                     assert any(segment.get('words') for segment in result['segments']), name
                     results[name] = result['text']
                     assert len(app.faster_model_cache) == 1
                 evidence['models'] = results
+                evidence['model_options_present'] = sorted(gui.MODEL_OPTIONS)
                 with tempfile.TemporaryDirectory(prefix='shangzimu-full-qa-') as directory:
                     app.lyrics_output_dir = directory
                     app.lyrics_language_var.set('英文 (en)')

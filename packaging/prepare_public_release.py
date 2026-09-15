@@ -10,6 +10,8 @@ import zipfile
 
 PLATFORMS = {'mac-x86_64': '.pkg', 'mac-arm64': '.pkg', 'windows-x64': '.exe'}
 REPOSITORY = 'ternence503/shangzimu-builds'
+VERSION = '1.5.0'
+MATERIAL_SCOPES = {'main-runtime', 'vocal-worker', 'umx-hq'}
 MIXED_SOURCE_DIFFERENCES = frozenset({
     '.github/workflows/bundle-validation.yml',
     'packaging/windows/msvc_environment.cmd',
@@ -94,6 +96,38 @@ def sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def verify_vocal_materials(directory):
+    manifest_path = directory / 'vocal-materials-manifest.json'
+    review = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if (review.get('schema') != 1 or review.get('status') != 'reviewed-for-public-test'
+            or review.get('scope') != 'final-frozen-vocal-worker'
+            or not review.get('native_files')):
+        raise ValueError('Final reviewed VocalWorker manifest required')
+    natives = review.get('native_files', [])
+    if not natives:
+        raise ValueError('Final VocalWorker native inventory required')
+    for item in natives:
+        path = str(item.get('path', ''))
+        if (re.search(r'(^|[/\\])[^/\\]*sox[^/\\]*(?:\.dll|\.pyd|\.so|\.dylib)$', path, re.I)
+                or item.get('status') != 'reviewed-for-public-test'
+                or not item.get('owner') or not str(item.get('source_url', '')).startswith('https://')
+                or not item.get('license_paths')):
+            raise ValueError('Every VocalWorker native needs a reviewed mapping and native SoX is forbidden')
+    expected = {'vocal-worker/vocal-materials-manifest.json'}
+    expected.update('vocal-worker/' + entry['path'] for entry in review.get('materials', []))
+    archive_path = directory / 'source-and-license-materials.zip'
+    with zipfile.ZipFile(archive_path) as archive:
+        names = set(archive.namelist())
+        if not expected <= names:
+            raise ValueError('VocalWorker source/license payload missing from archive')
+        if hashlib.sha256(archive.read('vocal-worker/vocal-materials-manifest.json')).hexdigest() != sha256(manifest_path):
+            raise ValueError('Archived VocalWorker manifest differs from release manifest')
+        for entry in review.get('materials', []):
+            if hashlib.sha256(archive.read('vocal-worker/' + entry['path'])).hexdigest() != entry['sha256']:
+                raise ValueError('Archived VocalWorker material hash mismatch')
+    return review
+
+
 def prepare(downloads, output, commit, run_id, platform_provenance=None, source_repository=None):
     if not re.fullmatch(r'[a-f0-9]{40}', commit) or not re.fullmatch(r'\d+', run_id):
         raise ValueError('Exact verified CI commit and run required')
@@ -126,20 +160,24 @@ def prepare(downloads, output, commit, run_id, platform_provenance=None, source_
                 raise ValueError('Artifact checksum mismatch')
         installers = [name for name in files if name.endswith(PLATFORMS[platform])]
         required = {'source-and-license-materials.zip', 'reviewed-materials-manifest.json',
-                    'components.json', 'acceptance-evidence.json', 'actual-build-dependency-lock.txt'}
+                    'vocal-materials-manifest.json', 'components.json',
+                    'acceptance-evidence.json', 'actual-build-dependency-lock.txt'}
         if len(installers) != 1 or not required <= files.keys():
             raise ValueError('Complete installer, source and evidence files required')
-        expected_name = f'上字幕-1.4.1-{platform}-公開測試未正式簽署{PLATFORMS[platform]}'
+        expected_name = f'上字幕-{VERSION}-{platform}-公開測試未正式簽署{PLATFORMS[platform]}'
         if installers[0] != expected_name:
             raise ValueError('Exact platform-specific installer basename required')
         review = json.loads((directory / 'reviewed-materials-manifest.json').read_text(encoding='utf-8'))
         if review.get('status') != 'reviewed-for-public-test' or review.get('inventory_sha256') != sha256(directory / 'components.json'):
             raise ValueError('Material review inventory mismatch')
+        if set(manifest.get('material_scopes', [])) != MATERIAL_SCOPES:
+            raise ValueError('Main runtime, VocalWorker and UMX-HQ material scopes required')
+        verify_vocal_materials(directory)
         selected[platform] = (directory, installers[0])
     if set(selected) != set(PLATFORMS):
         raise ValueError('All three native platform installers required')
     output.mkdir(parents=True)
-    with zipfile.ZipFile(output / 'shangzimu-1.4.1-test-verification.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(output / f'shangzimu-{VERSION}-test-verification.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('release-provenance.json', json.dumps({
             'schema': 1, 'release_target_commit': commit, 'default_run_id': run_id,
             'platforms': expected, 'mixed_provenance_requested': platform_provenance is not None,
@@ -151,11 +189,12 @@ def prepare(downloads, output, commit, run_id, platform_provenance=None, source_
             # GitHub strips non-ASCII asset characters; publish stable names
             # while retaining the original CI basename in provenance records.
             signing = 'unnotarized' if platform.startswith('mac-') else 'unsigned'
-            published_installer = f'shangzimu-1.4.1-{platform}-test-{signing}{PLATFORMS[platform]}'
+            published_installer = f'shangzimu-{VERSION}-{platform}-full-test-{signing}{PLATFORMS[platform]}'
             shutil.copyfile(directory / installer, output / published_installer)
             shutil.copyfile(directory / 'source-and-license-materials.zip',
-                            output / f'shangzimu-1.4.1-{platform}-sources.zip')
-            for name in ('source-and-checksums.json', 'reviewed-materials-manifest.json', 'components.json',
+                            output / f'shangzimu-{VERSION}-{platform}-sources.zip')
+            for name in ('source-and-checksums.json', 'reviewed-materials-manifest.json',
+                         'vocal-materials-manifest.json', 'components.json',
                          'acceptance-evidence.json', 'actual-build-dependency-lock.txt'):
                 archive.write(directory / name, platform + '/' + name)
     sums = ''.join(f'{sha256(path)}  {path.name}\n' for path in sorted(output.iterdir()))

@@ -25,7 +25,7 @@ class PreparePublicReleaseTests(unittest.TestCase):
         for platform, suffix in release.PLATFORMS.items():
             directory = self.downloads / platform
             directory.mkdir()
-            installer = f'上字幕-1.4.1-{platform}-公開測試未正式簽署{suffix}'
+            installer = f'上字幕-{release.VERSION}-{platform}-公開測試未正式簽署{suffix}'
             (directory / installer).write_bytes(('SYNTHETIC NONEXECUTABLE INSTALLER FIXTURE ' + platform).encode())
             (directory / 'components.json').write_text('{"fixture": true}')
             (directory / 'acceptance-evidence.json').write_text('[]')
@@ -33,11 +33,28 @@ class PreparePublicReleaseTests(unittest.TestCase):
             (directory / 'reviewed-materials-manifest.json').write_text(json.dumps({
                 'schema': 1, 'status': 'reviewed-for-public-test',
                 'inventory_sha256': release.sha256(directory / 'components.json'), 'files': []}))
+            vocal_license = b'Synthetic reviewed VocalWorker license fixture'
+            vocal_manifest = {
+                'schema': 1, 'status': 'reviewed-for-public-test',
+                'scope': 'final-frozen-vocal-worker',
+                'native_files': [{'path': 'VocalWorker', 'sha256': '1' * 64,
+                                  'status': 'reviewed-for-public-test',
+                                  'owner': 'PyInstaller-bootloader',
+                                  'source_url': 'https://github.com/pyinstaller/pyinstaller/tree/v6.22.0',
+                                  'license_paths': ['licenses/LICENSE']}],
+                'materials': [{'path': 'licenses/LICENSE',
+                               'sha256': __import__('hashlib').sha256(vocal_license).hexdigest()}],
+            }
+            (directory / 'vocal-materials-manifest.json').write_text(json.dumps(vocal_manifest))
             with zipfile.ZipFile(directory / 'source-and-license-materials.zip', 'w') as archive:
                 archive.writestr('LICENSE.fixture', 'Synthetic fixture, not a distribution license')
+                archive.writestr('vocal-worker/vocal-materials-manifest.json',
+                                 (directory / 'vocal-materials-manifest.json').read_bytes())
+                archive.writestr('vocal-worker/licenses/LICENSE', vocal_license)
             manifest = {'schema': 1, 'status': 'unsigned-public-test-not-final',
                 'repository': release.REPOSITORY, 'commit': self.commit, 'run_id': self.run_id,
-                'platform': platform, 'files': {p.name: {'sha256': release.sha256(p), 'size': p.stat().st_size}
+                'platform': platform, 'material_scopes': sorted(release.MATERIAL_SCOPES),
+                'files': {p.name: {'sha256': release.sha256(p), 'size': p.stat().st_size}
                     for p in directory.iterdir()}}
             self.write_manifest(platform, manifest)
 
@@ -56,14 +73,14 @@ class PreparePublicReleaseTests(unittest.TestCase):
         self.assertEqual(sum(n.endswith('.pkg') for n in names), 2)
         self.assertEqual(sum(n.endswith('.exe') for n in names), 1)
         self.assertTrue(all(n.isascii() for n in names))
-        self.assertIn('shangzimu-1.4.1-mac-arm64-test-unnotarized.pkg', names)
-        self.assertIn('shangzimu-1.4.1-mac-x86_64-test-unnotarized.pkg', names)
-        self.assertIn('shangzimu-1.4.1-windows-x64-test-unsigned.exe', names)
+        self.assertIn('shangzimu-1.5.0-mac-arm64-full-test-unnotarized.pkg', names)
+        self.assertIn('shangzimu-1.5.0-mac-x86_64-full-test-unnotarized.pkg', names)
+        self.assertIn('shangzimu-1.5.0-windows-x64-full-test-unsigned.exe', names)
         for line in (self.output / 'SHA256SUMS.txt').read_text().splitlines():
             digest, name = line.split('  ', 1)
             self.assertEqual(release.sha256(self.output / name), digest)
-        with zipfile.ZipFile(self.output / 'shangzimu-1.4.1-test-verification.zip') as archive:
-            self.assertEqual(len(archive.namelist()), 16)
+        with zipfile.ZipFile(self.output / 'shangzimu-1.5.0-test-verification.zip') as archive:
+            self.assertEqual(len(archive.namelist()), 19)
 
     def mixed_fixture(self):
         self.repo = self.root / 'source'
@@ -99,7 +116,7 @@ class PreparePublicReleaseTests(unittest.TestCase):
         mapping = self.mixed_fixture()
         names = release.prepare(self.downloads, self.output, self.commit, self.run_id, mapping, self.repo)
         self.assertEqual(len(names), 8)
-        with zipfile.ZipFile(self.output / 'shangzimu-1.4.1-test-verification.zip') as archive:
+        with zipfile.ZipFile(self.output / 'shangzimu-1.5.0-test-verification.zip') as archive:
             provenance = json.loads(archive.read('release-provenance.json'))
             self.assertEqual(provenance['platforms'], mapping)
             self.assertEqual(provenance['release_target_commit'], self.commit)
@@ -165,6 +182,13 @@ class PreparePublicReleaseTests(unittest.TestCase):
 
     def test_missing_platform_rejected(self):
         (self.downloads / 'mac-arm64' / 'source-and-checksums.json').unlink()
+        with self.assertRaises(ValueError): self.prepare()
+        self.assertFalse(self.output.exists())
+
+    def test_missing_vocal_scope_or_payload_rejected(self):
+        manifest = self.read_manifest()
+        manifest['material_scopes'] = ['main-runtime']
+        self.write_manifest('mac-x86_64', manifest)
         with self.assertRaises(ValueError): self.prepare()
         self.assertFalse(self.output.exists())
 
