@@ -99,7 +99,7 @@ def audit_graph(bundle, images, dll_directories=()):
     return {'status':'passed' if images and not errors else 'needs-review',
             'pe_count':len(images), 'errors':errors, 'resolutions':resolutions,
             'declared_dll_directories':declared,
-            'runtime_roots':[str(path.relative_to(bundle)) if path != bundle else '.' for path in runtime_roots],
+            'runtime_roots':[path.relative_to(bundle).as_posix() if path != bundle else '.' for path in runtime_roots],
             'limitations':'Static imports and delay imports only. OS core/API-set names assumed available on supported Windows. '
                           'Nested PyInstaller process roots are isolated. DLL directories are caller-declared runtime hooks '
                           'scoped to their owning process; duplicate search order is rejected. '
